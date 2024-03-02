@@ -357,7 +357,7 @@ def sync_check(self):
         r = self.s.get(url, params=params, headers=headers, timeout=config.TIMEOUT)
     except requests.exceptions.ConnectionError as e:
         try:
-            if not isinstance(e.args[0].args[1], BadStatusLine):
+            if not isinstance(e.args[0].reason.args[1], BadStatusLine):
                 raise
             # will return a package with status '0 -'
             # and value like:
