@@ -16,7 +16,6 @@ Unreleased
 
 Added
 -----
-- Add UOS weixin desktop patch
 - Add 'replace_emoticon' flag, disable this flag to stop emoticon conversion
 
 Changed
