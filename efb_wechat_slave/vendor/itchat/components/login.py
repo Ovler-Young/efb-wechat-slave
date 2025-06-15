@@ -420,7 +420,7 @@ def get_msg(self):
     logger.debug(f"[webwxsync] Response Status: {r.status_code}")
     logger.debug(f"[webwxsync] Response Headers: {dict(r.headers)}")
     logger.debug(f"[webwxsync] Response Content Length: {len(r.content)}")
-    logger.debug(f"[webwxsync] Response Text (first 1000 chars): {r.text[:1000]}")
+    logger.debug(f"[webwxsync] Response Text: {r.text}")
     
     dic = json.loads(r.content.decode('utf-8', 'replace'))
     
