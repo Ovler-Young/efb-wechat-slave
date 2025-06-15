@@ -420,11 +420,11 @@ def get_msg(self):
     logger.debug(f"[webwxsync] Response Status: {r.status_code}")
     logger.debug(f"[webwxsync] Response Headers: {dict(r.headers)}")
     logger.debug(f"[webwxsync] Response Content Length: {len(r.content)}")
-    logger.debug(f"[webwxsync] Response Text: {r.text}")
     
     dic = json.loads(r.content.decode('utf-8', 'replace'))
     
     # DEBUG: 打印解析后的关键信息
+    logger.debug(f"[webwxsync] Response JSON: {json.dumps(dic, indent=2, ensure_ascii=False)}")
     logger.debug(f"[webwxsync] BaseResponse.Ret: {dic.get('BaseResponse', {}).get('Ret', 'N/A')}")
     logger.debug(f"[webwxsync] AddMsgList count: {len(dic.get('AddMsgList', []))}")
     logger.debug(f"[webwxsync] ModContactList count: {len(dic.get('ModContactList', []))}")
