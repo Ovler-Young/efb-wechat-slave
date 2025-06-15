@@ -352,10 +352,23 @@ def sync_check(self):
         'synckey': self.loginInfo['synckey'],
         '_': self.loginInfo['logintime'], }
     headers = {'User-Agent': self.user_agent}
+    
+    # DEBUG: 打印 synccheck 请求信息
+    logger.debug(f"[synccheck] URL: {url}")
+    logger.debug(f"[synccheck] Params: {params}")
+    logger.debug(f"[synccheck] Headers: {headers}")
+    
     self.loginInfo['logintime'] += 1
     try:
         r = self.s.get(url, params=params, headers=headers, timeout=config.TIMEOUT)
+        
+        # DEBUG: 打印 synccheck 响应信息
+        logger.debug(f"[synccheck] Response Status: {r.status_code}")
+        logger.debug(f"[synccheck] Response Headers: {dict(r.headers)}")
+        logger.debug(f"[synccheck] Response Text: {r.text}")
+        
     except requests.exceptions.ConnectionError as e:
+        logger.debug(f"[synccheck] Connection Error: {e}")
         try:
             if not isinstance(e.args[0].reason.args[1], BadStatusLine):
                 raise
@@ -363,12 +376,20 @@ def sync_check(self):
             # and value like:
             # 6f:00:8a:9c:09:74:e4:d8:e0:14:bf:96:3a:56:a0:64:1b:a4:25:5d:12:f4:31:a5:30:f1:c6:48:5f:c3:75:6a:99:93
             # seems like status of typing, but before I make further achievement code will remain like this
+            logger.debug("[synccheck] Returning '2' due to BadStatusLine")
             return '2'
         except:
             raise
     r.raise_for_status()
     regx = r'window.synccheck={retcode:"(\d+)",selector:"(\d+)"}'
     pm = re.search(regx, r.text)
+    
+    # DEBUG: 打印解析结果
+    if pm:
+        logger.debug(f"[synccheck] Parsed retcode: {pm.group(1)}, selector: {pm.group(2)}")
+    else:
+        logger.debug(f"[synccheck] Failed to parse response: {r.text}")
+    
     if pm is None or pm.group(1) != '0':
         logger.debug('Unexpected sync check result: %s' % r.text)
         return None
@@ -386,12 +407,48 @@ def get_msg(self):
     headers = {
         'ContentType': 'application/json; charset=UTF-8',
         'User-Agent': self.user_agent}
+    
+    # DEBUG: 打印 webwxsync 请求信息
+    logger.debug(f"[webwxsync] URL: {url}")
+    logger.debug(f"[webwxsync] Data: {json.dumps(data, indent=2, ensure_ascii=False)}")
+    logger.debug(f"[webwxsync] Headers: {headers}")
+    logger.debug(f"[webwxsync] Current deviceid: {self.loginInfo.get('deviceid', 'N/A')}")
+    
     r = self.s.post(url, data=json.dumps(data), headers=headers, timeout=config.TIMEOUT)
+    
+    # DEBUG: 打印 webwxsync 响应信息
+    logger.debug(f"[webwxsync] Response Status: {r.status_code}")
+    logger.debug(f"[webwxsync] Response Headers: {dict(r.headers)}")
+    logger.debug(f"[webwxsync] Response Content Length: {len(r.content)}")
+    logger.debug(f"[webwxsync] Response Text (first 1000 chars): {r.text[:1000]}")
+    
     dic = json.loads(r.content.decode('utf-8', 'replace'))
-    if dic['BaseResponse']['Ret'] != 0: return None, None
+    
+    # DEBUG: 打印解析后的关键信息
+    logger.debug(f"[webwxsync] BaseResponse.Ret: {dic.get('BaseResponse', {}).get('Ret', 'N/A')}")
+    logger.debug(f"[webwxsync] AddMsgList count: {len(dic.get('AddMsgList', []))}")
+    logger.debug(f"[webwxsync] ModContactList count: {len(dic.get('ModContactList', []))}")
+    
+    if 'AddMsgList' in dic and dic['AddMsgList']:
+        logger.debug(f"[webwxsync] AddMsgList: {json.dumps(dic['AddMsgList'], indent=2, ensure_ascii=False)}")
+    
+    if 'ModContactList' in dic and dic['ModContactList']:
+        logger.debug(f"[webwxsync] ModContactList: {json.dumps(dic['ModContactList'], indent=2, ensure_ascii=False)}")
+    
+    if dic['BaseResponse']['Ret'] != 0: 
+        logger.debug(f"[webwxsync] Error: BaseResponse.Ret = {dic['BaseResponse']['Ret']}")
+        return None, None
+    
     self.loginInfo['SyncKey'] = dic['SyncKey']
+    old_synckey = self.loginInfo.get('synckey', '')
     self.loginInfo['synckey'] = '|'.join(['%s_%s' % (item['Key'], item['Val'])
                                           for item in dic['SyncCheckKey']['List']])
+    
+    # DEBUG: 打印 SyncKey 更新信息
+    logger.debug(f"[webwxsync] Old synckey: {old_synckey}")
+    logger.debug(f"[webwxsync] New synckey: {self.loginInfo['synckey']}")
+    logger.debug(f"[webwxsync] SyncKey: {json.dumps(dic['SyncKey'], indent=2, ensure_ascii=False)}")
+    
     return dic['AddMsgList'], dic['ModContactList']
 
 
