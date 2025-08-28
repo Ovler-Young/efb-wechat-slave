@@ -272,6 +272,9 @@ class SlaveMessageManager:
                         des = self.get_node_text(xml, './appmsg/des', "")
                         url = self.get_node_text(xml, './appmsg/url', "")
                         return self.wechat_shared_link_msg(msg, source, title, des, url)
+                    elif appmsg_type == '6':  # File
+                        title = self.get_node_text(xml, './appmsg/title', "")
+                        return self.wechat_shared_file_msg(msg, source, title)
                     elif appmsg_type in ('33', '36'):  # Mini programs (wxapp)
                         title = self.get_node_text(xml, './appmsg/sourcedisplayname', "") or \
                                 self.get_node_text(xml, './appmsg/appinfo/appname', "") or \
@@ -444,6 +447,20 @@ class SlaveMessageManager:
         return efb_msg
 
     @Decorators.wechat_msg_meta
+    def wechat_shared_file_msg(self, msg: wxpy.Message, source: str, title: str) -> Message:
+        efb_msg = Message(type=MsgType.File)
+        try:
+            efb_msg.text = title or ""
+            if source:
+                efb_msg.text = self._("{file_name} sent via {app_name}").format(file_name=title, app_name=source)
+            efb_msg.filename = title or ""
+            efb_msg.path, efb_msg.mime, efb_msg.file = self.save_file(msg, app_message="file")
+        except (EOFError, ValueError):
+            efb_msg.type = MsgType.Text
+            efb_msg.text += self._("[Failed to download the file, please check your phone.]")
+        return efb_msg
+
+    @Decorators.wechat_msg_meta
     def wechat_voice_msg(self, msg: wxpy.Message) -> Message:
         efb_msg = Message(type=MsgType.Voice)
         try:
@@ -538,6 +555,21 @@ class SlaveMessageManager:
                 headers = {'User-Agent': self.bot.user_agent}
                 if app_message == 'thumbnail':
                     params['type'] = 'slave'
+                r = msg.bot.core.s.get(url, params=params, stream=True, headers=headers)
+                for block in r.iter_content(1024):
+                    file.write(block)
+            elif app_message == 'file':
+                cookies_list = {name: data for name, data in self.bot.core.s.cookies.items()}
+                url = msg.bot.core.loginInfo['fileUrl'] + '/webwxgetmedia'
+                params = {
+                    'sender': msg.raw['FromUserName'],
+                    'mediaid': msg.media_id,
+                    'filename': msg.file_name,
+                    'fromuser': msg.bot.core.loginInfo['wxuin'],
+                    'pass_ticket': 'undefined',
+                    'webwx_data_ticket': cookies_list['webwx_data_ticket'],
+                }
+                headers = {'User-Agent': self.bot.user_agent}
                 r = msg.bot.core.s.get(url, params=params, stream=True, headers=headers)
                 for block in r.iter_content(1024):
                     file.write(block)
