@@ -306,8 +306,9 @@ class SlaveMessageManager:
         title = self.get_node_text(xml, './appmsg/finderFeed/nickname', "")
         description = self.get_node_text(xml, './appmsg/finderFeed/desc', "")
         image = self.get_node_text(xml, './appmsg/finderFeed/mediaList/media/thumbUrl', "")
+        url = self.get_node_text(xml, './appmsg/finderFeed/mediaList/media/url', "")
         source = self._("WeChat Channels")
-        return self.wechat_raw_link_msg(msg, title, description, image, url="", suffix=self._("Via {source}").format(source=source))
+        return self.wechat_raw_link_msg(msg, title, description, image, url=url, suffix=self._("Via {source}").format(source=source))
 
     @Decorators.wechat_msg_meta
     def wechat_unsupported_msg(self, msg: wxpy.Message) -> Message:
