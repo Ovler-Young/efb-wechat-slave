@@ -275,6 +275,8 @@ class SlaveMessageManager:
                     elif appmsg_type == '6':  # File
                         title = self.get_node_text(xml, './appmsg/title', "")
                         return self.wechat_shared_file_msg(msg, source, title)
+                    elif appmsg_type == '51':  # WeChat Channels
+                        return self.wechat_channels_msg(msg)
                     elif appmsg_type in ('33', '36'):  # Mini programs (wxapp)
                         title = self.get_node_text(xml, './appmsg/sourcedisplayname', "") or \
                                 self.get_node_text(xml, './appmsg/appinfo/appname', "") or \
@@ -297,6 +299,15 @@ class SlaveMessageManager:
 
         for i in links:
             self.wechat_raw_link_msg(msg, i.title, i.summary, i.cover, i.url)
+
+    @Decorators.wechat_msg_meta
+    def wechat_channels_msg(self, msg: wxpy.Message) -> Message:
+        xml = ETree.fromstring(msg.raw.get('Content'))
+        title = self.get_node_text(xml, './appmsg/finderFeed/nickname', "")
+        description = self.get_node_text(xml, './appmsg/finderFeed/desc', "")
+        image = self.get_node_text(xml, './appmsg/finderFeed/mediaList/media/thumbUrl', "")
+        source = self._("WeChat Channels")
+        return self.wechat_raw_link_msg(msg, title, description, image, url="", suffix=self._("Via {source}").format(source=source))
 
     @Decorators.wechat_msg_meta
     def wechat_unsupported_msg(self, msg: wxpy.Message) -> Message:
