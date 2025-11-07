@@ -7,7 +7,7 @@ import traceback, logging
 try:
     from httplib import BadStatusLine
 except ImportError:
-    from http.client import BadStatusLine
+    from http.client import BadStatusLine, RemoteDisconnected
 
 import requests
 from pyqrcode import QRCode
@@ -320,6 +320,9 @@ def start_receiving(self, exitCallback=None, getReceivingFnOnly=False):
                 retryCount = 0
             except requests.exceptions.ReadTimeout:
                 pass
+            except (RemoteDisconnected, requests.exceptions.ConnectionError):
+                logger.warning('Network connection lost, retrying...')
+                time.sleep(1)
             except:
                 retryCount += 1
                 logger.error(traceback.format_exc())
