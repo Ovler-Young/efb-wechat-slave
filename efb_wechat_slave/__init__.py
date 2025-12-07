@@ -76,6 +76,7 @@ class WeChatChannel(SlaveChannel):
 
     # Constants
     MAX_FILE_SIZE: int = 5 * 2 ** 20
+    MAX_SEND_FILE_SIZE: int = 25 * 2 ** 20  # For files, audio, and video
     SYSTEM_ACCOUNTS: Final = {
         # TRANSLATORS: Translate this to the corresponding display name of the WeChat system account. Guessed names are not accepted.
         'filehelper': _('filehelper'),
@@ -483,6 +484,13 @@ class WeChatChannel(SlaveChannel):
                              msg.uid, msg.type, msg.text, msg.path, msg.filename)
             filename = msg.filename or (msg.path and msg.path.name)
             assert filename and msg.file
+            # Check file size
+            file_size = msg.file.seek(0, 2)
+            msg.file.seek(0)
+            if file_size > self.MAX_SEND_FILE_SIZE:
+                raise EFBMessageError(
+                    self._("File size exceeds 25MB limit. File size: {size:.2f}MB")
+                    .format(size=file_size / (2 ** 20)))
             r.append(self._bot_send_file(chat, filename, file=msg.file))
             if msg.text:
                 self._bot_send_msg(chat, msg.text)
@@ -493,6 +501,13 @@ class WeChatChannel(SlaveChannel):
                 "[%s] Sending video to WeChat\nFileName: %s\nPath: %s", msg.uid, msg.text, msg.path)
             filename = msg.filename or (msg.path and msg.path.name)
             assert filename and msg.file
+            # Check file size
+            file_size = msg.file.seek(0, 2)
+            msg.file.seek(0)
+            if file_size > self.MAX_SEND_FILE_SIZE:
+                raise EFBMessageError(
+                    self._("File size exceeds 25MB limit. File size: {size:.2f}MB")
+                    .format(size=file_size / (2 ** 20)))
             r.append(self._bot_send_video(chat, filename, file=msg.file))
             if msg.text:
                 r.append(self._bot_send_msg(chat, msg.text))
