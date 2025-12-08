@@ -5,6 +5,7 @@ import logging
 import re
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Tuple, Dict, BinaryIO
@@ -97,7 +98,35 @@ class SlaveMessageManager:
 
                 logger.debug("[%s] Chat: %s, Author: %s", efb_msg.uid, efb_msg.chat, efb_msg.author)
 
-                coordinator.send_message(efb_msg)
+                # Retry mechanism for connection errors
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        coordinator.send_message(efb_msg)
+                        break  # Success, exit retry loop
+                    except (ConnectionError, Exception) as e:
+                        # Check if it's a connection-related error
+                        error_msg = str(e)
+                        if 'Connection aborted' in error_msg or 'RemoteDisconnected' in error_msg or \
+                           'Remote end closed connection' in error_msg or isinstance(e, ConnectionError):
+                            if attempt < max_retries - 1:
+                                wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
+                                logger.warning(
+                                    "[%s] Message is not sent. Connection error occurred (attempt %d/%d): %s. "
+                                    "Retrying in %d seconds...",
+                                    efb_msg.uid, attempt + 1, max_retries, e, wait_time
+                                )
+                                time.sleep(wait_time)
+                            else:
+                                logger.error(
+                                    "[%s] Message is not sent. Failed after %d attempts. Last error: %s",
+                                    efb_msg.uid, max_retries, e
+                                )
+                                raise
+                        else:
+                            # Not a connection error, raise immediately
+                            raise
+                
                 if efb_msg.file:
                     efb_msg.file.close()
 
