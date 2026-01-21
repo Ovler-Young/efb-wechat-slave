@@ -236,20 +236,24 @@ class PuidMap(object):
 
         # Safe dump
         data = (self.user_names, self.wxids, self.remark_names, self.captions)
-        if not os.path.exists(self.path):
-            with open(self.path, "wb") as f:
-                pickle.dump(data, f)
-        else:
-            file_io_logger.debug("Attempting to overwrite PUID mapping.")
-            temp_path = f"{self.path}.{secrets.token_urlsafe(8)}"
-            file_io_logger.debug(f"Write PUID mapping to {temp_path}.")
-            with open(temp_path, "wb") as f:
-                pickle.dump(data, f)
-            file_io_logger.debug(f"Remove old PUID mapping at {self.path}")
-            os.unlink(self.path)
-            file_io_logger.debug(f"Move new PUID mapping from {temp_path} to {self.path}")
-            os.rename(temp_path, self.path)
-            file_io_logger.debug(f"PUID mapping overwrite completed.")
+        temp_path = f"{self.path}.{secrets.token_urlsafe(8)}"
+        bak_path = f"{self.path}.bak"
+
+        file_io_logger.debug(f"Write PUID mapping to {temp_path}.")
+        with open(temp_path, "wb") as f:
+            pickle.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+
+        if os.path.exists(self.path):
+            file_io_logger.debug(f"Backup old PUID mapping to {bak_path}")
+            if os.path.exists(bak_path):
+                os.unlink(bak_path)
+            os.rename(self.path, bak_path)
+
+        file_io_logger.debug(f"Move new PUID mapping from {temp_path} to {self.path}")
+        os.replace(temp_path, self.path)
+        file_io_logger.debug(f"PUID mapping overwrite completed.")
 
         if self._dump_task:
             self._dump_task = None
