@@ -43,7 +43,7 @@ PuidMap 中包含 4 个 dict，分别为
 """
 
 # Type definitions
-Caption = Tuple[str, Optional[str], Optional[str], Optional[str]]
+Caption = Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]
 
 file_io_logger: logging.Logger = logging.getLogger(__name__)
 
@@ -276,6 +276,8 @@ class PuidMap(object):
                 self.log("Local disk - wxids: %s", self.wxids)
                 self.log("Local disk - remark_names: %s", self.remark_names)
                 self.log("Local disk - captions: %s", self.captions)
+                # Migrate old 4-tuple captions to 5-tuple (add signature as None)
+                self._migrate_captions()
         except (ImportError, ModuleNotFoundError) as e:
             # Mitigate the pickling issue of migrating .wxpy to .vendor.wxpy
             if recur:
@@ -286,6 +288,21 @@ class PuidMap(object):
                 f.write(src)
             return self.load(recur=True)
 
+    def _migrate_captions(self):
+        """Migrate old 4-tuple captions to 5-tuple format (add signature as None)."""
+        migrated = TwoWayDict()
+        needs_migration = False
+        for caption, puid in self.captions.items():
+            if len(caption) == 4:
+                # Old format: (nick_name, sex, province, city)
+                # New format: (nick_name, sex, province, city, signature)
+                caption = (*caption, None)
+                needs_migration = True
+            migrated[caption] = puid
+        if needs_migration:
+            self.captions = migrated
+            self.log("Migrated captions from 4-tuple to 5-tuple format")
+
     @staticmethod
     def get_caption(chat: 'Chat') -> Caption:
         return (
@@ -293,12 +310,13 @@ class PuidMap(object):
             getattr(chat, 'sex', None),
             getattr(chat, 'province', None),
             getattr(chat, 'city', None),
+            getattr(chat, 'signature', None),
         )
 
     def match_captions(self, old: Caption, new: Caption) -> bool:
-        """Full match of a 4-value tuple only when both side has a value"""
+        """Full match of a 5-value tuple only when both side has a value"""
         if new[0] and old:
-            for i in range(4):
+            for i in range(5):
                 if old[i] and new[i] and old[i] != new[i]:
                     if i > 0:
                         self.log("Potential common attribute match: %s -> %s", old, new)
@@ -308,11 +326,11 @@ class PuidMap(object):
 
     @staticmethod
     def merge_captions(old: Optional[Caption], new: Caption) -> Caption:
-        """Merge a 4-value tuple where new values replaces old values"""
+        """Merge a 5-value tuple where new values replaces old values"""
         if not old:
             return new
         else:
-            cap: Caption = (new[0] or old[0], new[1] or old[1], new[2] or old[2], new[3] or old[3])
+            cap: Caption = (new[0] or old[0], new[1] or old[1], new[2] or old[2], new[3] or old[3], new[4] or old[4])
             return cap
 
 
