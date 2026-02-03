@@ -301,6 +301,9 @@ def start_receiving(self, exitCallback=None, getReceivingFnOnly=False):
                 elif i == '0':
                     pass
                 else:
+                    # Check if still alive before processing messages
+                    if not self.alive:
+                        break
                     msgList, contactList = self.get_msg()
                     if contactList:
                         chatroomList, otherList = [], []
@@ -313,24 +316,38 @@ def start_receiving(self, exitCallback=None, getReceivingFnOnly=False):
                         chatroomMsg['User'] = self.loginInfo['User']
                         self.msgList.put(chatroomMsg)
                         update_local_friends(self, otherList)
-                    if msgList:
+                    if msgList and self.alive:  # Check alive before queuing messages
                         msgList = produce_msg(self, msgList)
                         for msg in msgList:
+                            if not self.alive:
+                                break
                             self.msgList.put(msg)
                 retryCount = 0
             except requests.exceptions.ReadTimeout:
                 pass
-            except (RemoteDisconnected, requests.exceptions.ConnectionError):
+            except (RemoteDisconnected, requests.exceptions.ConnectionError) as e:
+                # If not alive (shutting down), exit immediately without retry
+                if not self.alive:
+                    logger.info('Shutting down, exiting maintain_loop')
+                    break
                 logger.warning('Network connection lost, retrying...')
                 time.sleep(1)
             except:
+                # If not alive, exit immediately
+                if not self.alive:
+                    logger.info('Shutting down, exiting maintain_loop')
+                    break
                 retryCount += 1
                 logger.error(traceback.format_exc())
                 if self.receivingRetryCount < retryCount:
                     self.alive = False
                 else:
                     time.sleep(1)
-        self.logout()
+        # Only logout if we were properly alive before (not during forced shutdown)
+        try:
+            self.logout()
+        except Exception as e:
+            logger.warning('Error during logout: %s', e)
         if hasattr(exitCallback, '__call__'):
             exitCallback()
         else:

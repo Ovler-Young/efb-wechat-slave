@@ -71,11 +71,22 @@ class SlaveMessageManager:
         def wechat_msg_meta(cls, func: Callable):
             def wrap_func(self: 'SlaveMessageManager', msg: wxpy.Message, *args, **kwargs):
                 logger = logging.getLogger(__name__)
+
+                # Check if channel is shutting down - drop message early
+                if self.channel._stop_polling_event.is_set():
+                    logger.debug("[%s] Dropping message as channel is shutting down.", msg.id)
+                    return
+
                 logger.debug("[%s] Raw message: %r", msg.id, msg.raw)
 
                 efb_msg: Optional[Message] = func(self, msg, *args, **kwargs)
 
                 if efb_msg is None:
+                    return
+
+                # Check again after processing in case shutdown started
+                if self.channel._stop_polling_event.is_set():
+                    logger.debug("[%s] Dropping message as channel is shutting down.", efb_msg.uid)
                     return
 
                 if getattr(coordinator, 'master', None) is None:
@@ -101,10 +112,20 @@ class SlaveMessageManager:
                 # Retry mechanism for connection errors
                 max_retries = 3
                 for attempt in range(max_retries):
+                    # Check if shutting down before each attempt
+                    if self.channel._stop_polling_event.is_set():
+                        logger.debug("[%s] Aborting send retry as channel is shutting down.", efb_msg.uid)
+                        return
+
                     try:
                         coordinator.send_message(efb_msg)
                         break  # Success, exit retry loop
                     except (ConnectionError, Exception) as e:
+                        # If shutting down, don't retry - just exit
+                        if self.channel._stop_polling_event.is_set():
+                            logger.debug("[%s] Dropping message due to shutdown during send.", efb_msg.uid)
+                            return
+
                         # Check if it's a connection-related error
                         error_msg = str(e)
                         if 'Connection aborted' in error_msg or 'RemoteDisconnected' in error_msg or \

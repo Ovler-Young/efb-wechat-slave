@@ -555,9 +555,37 @@ class Bot(object):
                 self.listening_thread.join()
 
     def cleanup(self):
-        if self.is_listening:
-            self.stop()
-        if self.alive and self.core.useHotReload:
-            self.dump_login_status()
-            self.alive = False
-        self.temp_dir.cleanup()
+        logger.info('{}: cleanup started'.format(self))
+
+        # Set alive to False first to signal all loops to stop
+        self.alive = False
+        self.is_listening = False
+
+        # Close the session to interrupt any ongoing network requests
+        # This will cause requests to raise exceptions and unblock threads
+        try:
+            self.core.s.close()
+        except Exception as e:
+            logger.warning('Error closing session: {}'.format(e))
+
+        # Clear the message queue to prevent processing of pending messages
+        while not self.core.msgList.empty():
+            try:
+                self.core.msgList.get_nowait()
+            except queue.Empty:
+                break
+
+        # Save hot reload status if enabled
+        if self.core.useHotReload:
+            try:
+                self.dump_login_status()
+            except Exception as e:
+                logger.warning('Error dumping login status: {}'.format(e))
+
+        # Clean up temp directory
+        try:
+            self.temp_dir.cleanup()
+        except Exception as e:
+            logger.warning('Error cleaning temp dir: {}'.format(e))
+
+        logger.info('{}: cleanup completed'.format(self))
