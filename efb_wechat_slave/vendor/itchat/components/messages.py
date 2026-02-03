@@ -35,7 +35,7 @@ def get_download_fn(core, url, msgId):
     headers = {'User-Agent': core.user_agent}
 
     def download_fn(downloadDir=None):
-        r = core.s.get(url, params=params, stream=True, headers=headers)
+        r = core.s.get(url, params=params, stream=True, headers=headers, timeout=config.TIMEOUT)
         tempStorage = io.BytesIO()
         for block in r.iter_content(1024):
             tempStorage.write(block)
@@ -54,7 +54,7 @@ def get_download_fn(core, url, msgId):
 
 def get_attachment_download_fn(core, url, params, headers):
     def download_atta(attaDir=None):
-        r = core.s.get(url, params=params, stream=True, headers=headers)
+        r = core.s.get(url, params=params, stream=True, headers=headers, timeout=config.TIMEOUT)
         tempStorage = io.BytesIO()
         for block in r.iter_content(1024):
             tempStorage.write(block)
