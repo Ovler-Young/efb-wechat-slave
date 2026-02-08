@@ -568,6 +568,13 @@ class Bot(object):
         except Exception as e:
             logger.warning('Error closing session: {}'.format(e))
 
+        # Wait for listening thread to finish (with timeout)
+        if self.listening_thread and isinstance(self.listening_thread, Thread):
+            logger.info('{}: waiting for listening thread to finish'.format(self))
+            self.listening_thread.join(timeout=5.0)
+            if self.listening_thread.is_alive():
+                logger.warning('{}: listening thread did not finish in time'.format(self))
+
         # Clear the message queue to prevent processing of pending messages
         while not self.core.msgList.empty():
             try:
