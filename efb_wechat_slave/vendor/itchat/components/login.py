@@ -373,10 +373,8 @@ def sync_check(self):
         '_': self.loginInfo['logintime'], }
     headers = {'User-Agent': self.user_agent}
     self.loginInfo['logintime'] += 1
-    # Use shorter timeout when shutting down to allow faster cleanup
-    timeout = (2, 5) if not self.alive else config.TIMEOUT
     try:
-        r = self.s.get(url, params=params, headers=headers, timeout=timeout)
+        r = self.s.get(url, params=params, headers=headers, timeout=config.TIMEOUT)
     except requests.exceptions.ConnectionError as e:
         try:
             if not isinstance(e.args[0].reason.args[1], BadStatusLine):
