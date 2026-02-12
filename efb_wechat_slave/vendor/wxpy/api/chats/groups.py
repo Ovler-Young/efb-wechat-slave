@@ -1,10 +1,14 @@
 # coding: utf-8
 from __future__ import unicode_literals
 
+import logging
 from typing import List
 
+from ...exceptions import ResponseError
 from ...utils import ensure_list, match_attributes, match_name
 from .user import User
+
+logger = logging.getLogger(__name__)
 
 
 class Groups(list):
@@ -34,10 +38,15 @@ class Groups(list):
                 elif group.user_name in Groups.valid_group_user_names:
                     groups_to_init.append(group)
                 else:
-                    if group.bot.self in group:
-                        Groups.valid_group_user_names.append(group.user_name)
-                        groups_to_init.append(group)
-                    else:
+                    try:
+                        if group.bot.self in group:
+                            Groups.valid_group_user_names.append(group.user_name)
+                            groups_to_init.append(group)
+                        else:
+                            Groups.shadow_group_user_names.append(group.user_name)
+                    except ResponseError as e:
+                        # Handle cases where group is invalid (user removed, group deleted, etc.)
+                        logger.warning(f'Failed to check group membership for {group.user_name}: {e}. Treating as shadow group.')
                         Groups.shadow_group_user_names.append(group.user_name)
 
             super(Groups, self).__init__(groups_to_init)
