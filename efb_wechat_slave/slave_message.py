@@ -1,5 +1,6 @@
 # coding: utf-8
 
+import html
 import json
 import logging
 import re
@@ -8,7 +9,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional, Tuple, Dict, BinaryIO
+from typing import TYPE_CHECKING, Callable, Optional, Tuple, Dict, BinaryIO, List
 from xml.etree import ElementTree as ETree
 from xml.etree.ElementTree import Element
 
@@ -246,6 +247,13 @@ class SlaveMessageManager:
 
     @Decorators.wechat_msg_meta
     def wechat_system_msg(self, msg: wxpy.Message) -> Optional[Message]:
+        content = msg.raw.get('Content', '')
+        if 'weixinhongbao' in content:
+            urls = self._extract_hongbao_image_urls(content)
+            if urls:
+                for url in urls:
+                    self.wechat_image_from_url_msg(msg, url)
+                return None
         if msg.recalled_message_id:
             recall_id = str(msg.recalled_message_id)
             # check conversion table first
@@ -587,6 +595,51 @@ class SlaveMessageManager:
                 )
             ])
         )
+
+    @staticmethod
+    def _extract_hongbao_image_urls(content: str) -> List[str]:
+        """Extract image URLs from hongbao message content via showsourcemac field."""
+        import base64
+        content_unescaped = html.unescape(content)
+        mac_match = re.search(r'showsourcemac=([A-Za-z0-9+/=]+)', content_unescaped)
+        if not mac_match:
+            return []
+        try:
+            mac_data = base64.b64decode(mac_match.group(1) + '==')
+        except Exception:
+            return []
+        urls = re.findall(rb'https://[^\x00-\x1f\x80-\xff\s"\'<>]+', mac_data)
+        return [u.decode('utf-8', errors='replace') for u in urls]
+
+    @Decorators.wechat_msg_meta
+    def wechat_image_from_url_msg(self, msg: wxpy.Message, url: str = "") -> Optional[Message]:
+        """Download an image from an external URL and return as an Image message."""
+        try:
+            headers = {'User-Agent': self.bot.user_agent}
+            response = requests.get(url, headers=headers, stream=True, timeout=30)
+            response.raise_for_status()
+            file: BinaryIO = tempfile.NamedTemporaryFile()
+            for chunk in response.iter_content(1024):
+                file.write(chunk)
+            if file.seek(0, 2) <= 0:
+                raise EOFError('Downloaded file is empty')
+            file.seek(0)
+            mime = magic.from_file(file.name, mime=True)
+            if isinstance(mime, bytes):
+                mime = mime.decode()
+            return Message(
+                type=MsgType.Image,
+                text="",
+                path=Path(file.name),
+                mime=mime,
+                file=file,
+            )
+        except Exception as e:
+            self.logger.error("Failed to download hongbao image from %s: %s", url, e)
+            return Message(
+                type=MsgType.Unsupported,
+                text=self._("[Hongbao image, please check your phone.]"),
+            )
 
     def save_file(self, msg: wxpy.Message, app_message: Optional[str] = None) -> Tuple[Path, str, BinaryIO]:
         """
