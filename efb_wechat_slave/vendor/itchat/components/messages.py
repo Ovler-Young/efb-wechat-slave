@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import time
 from urllib.parse import quote
@@ -15,6 +16,12 @@ from ..returnvalues import ReturnValue
 from ..storage import templates
 
 logger = logging.getLogger('itchat')
+
+
+def _gen_msg_id():
+    """Generate message ID matching WeChat web client format:
+    millisecond timestamp + 3-digit random suffix."""
+    return str(int(time.time() * 1000)) + str(random.randint(0, 999)).zfill(3)
 
 
 def load_messages(core):
@@ -271,6 +278,7 @@ def produce_group_chat(core, msg):
 
 def send_raw_msg(self, msgType, content, toUserName):
     url = '%s/webwxsendmsg' % self.loginInfo['url']
+    msg_id = _gen_msg_id()
     data = {
         'BaseRequest': self.loginInfo['BaseRequest'],
         'Msg': {
@@ -278,8 +286,8 @@ def send_raw_msg(self, msgType, content, toUserName):
             'Content': content,
             'FromUserName': self.storageClass.userName,
             'ToUserName': (toUserName if toUserName else self.storageClass.userName),
-            'LocalID': int(time.time() * 1e4),
-            'ClientMsgId': int(time.time() * 1e4),
+            'LocalID': msg_id,
+            'ClientMsgId': msg_id,
         },
         'Scene': 0, }
     headers = {'ContentType': 'application/json; charset=UTF-8', 'User-Agent': self.user_agent}
@@ -401,6 +409,7 @@ def send_file(self, fileDir, toUserName=None, mediaId=None, file_=None):
         else:
             return r
     url = '%s/webwxsendappmsg?fun=async&f=json' % self.loginInfo['url']
+    msg_id = _gen_msg_id()
     data = {
         'BaseRequest': self.loginInfo['BaseRequest'],
         'Msg': {
@@ -412,8 +421,8 @@ def send_file(self, fileDir, toUserName=None, mediaId=None, file_=None):
                             1].replace('.', '')),
             'FromUserName': self.storageClass.userName,
             'ToUserName': toUserName,
-            'LocalID': int(time.time() * 1e4),
-            'ClientMsgId': int(time.time() * 1e4), },
+            'LocalID': msg_id,
+            'ClientMsgId': msg_id, },
         'Scene': 0, }
     headers = {
         'User-Agent': self.user_agent,
@@ -444,6 +453,7 @@ def send_image(self, fileDir=None, toUserName=None, mediaId=None, file_=None):
         else:
             return r
     url = '%s/webwxsendmsgimg?fun=async&f=json' % self.loginInfo['url']
+    msg_id = _gen_msg_id()
     data = {
         'BaseRequest': self.loginInfo['BaseRequest'],
         'Msg': {
@@ -451,8 +461,8 @@ def send_image(self, fileDir=None, toUserName=None, mediaId=None, file_=None):
             'MediaId': mediaId,
             'FromUserName': self.storageClass.userName,
             'ToUserName': toUserName,
-            'LocalID': int(time.time() * 1e4),
-            'ClientMsgId': int(time.time() * 1e4), },
+            'LocalID': msg_id,
+            'ClientMsgId': msg_id, },
         'Scene': 0, }
     if fileDir[-4:] == '.gif':
         url = '%s/webwxsendemoticon?fun=sys' % self.loginInfo['url']
@@ -488,6 +498,7 @@ def send_video(self, fileDir=None, toUserName=None, mediaId=None, file_=None):
             return r
     url = '%s/webwxsendvideomsg?fun=async&f=json&pass_ticket=%s' % (
         self.loginInfo['url'], self.loginInfo['pass_ticket'])
+    msg_id = _gen_msg_id()
     data = {
         'BaseRequest': self.loginInfo['BaseRequest'],
         'Msg': {
@@ -495,8 +506,8 @@ def send_video(self, fileDir=None, toUserName=None, mediaId=None, file_=None):
             'MediaId': mediaId,
             'FromUserName': self.storageClass.userName,
             'ToUserName': toUserName,
-            'LocalID': int(time.time() * 1e4),
-            'ClientMsgId': int(time.time() * 1e4), },
+            'LocalID': msg_id,
+            'ClientMsgId': msg_id, },
         'Scene': 0, }
     headers = {
         'User-Agent': self.user_agent,
@@ -537,7 +548,7 @@ def revoke(self, msgId, toUserName, localId=None):
     url = '%s/webwxrevokemsg' % self.loginInfo['url']
     data = {
         'BaseRequest': self.loginInfo['BaseRequest'],
-        "ClientMsgId": localId or str(time.time() * 1e3),
+        "ClientMsgId": localId or _gen_msg_id(),
         "SvrMsgId": msgId,
         "ToUserName": toUserName}
     headers = {
