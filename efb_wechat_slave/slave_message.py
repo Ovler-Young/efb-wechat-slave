@@ -330,6 +330,12 @@ class SlaveMessageManager:
                         des = self.get_node_text(xml, './appmsg/des', "")
                         url = self.get_node_text(xml, './appmsg/url', "")
                         return self.wechat_shared_link_msg(msg, source, title, des, url)
+                    elif appmsg_type == '40' and self.get_node_text(xml, './appmsg/realinnertype', '') == '19':
+                        title = self.get_node_text(xml, './appmsg/title', "")
+                        des = self.get_node_text(xml, './appmsg/des', "")
+                        notice = self._("[Chat record preview. Open WeChat to view the full record.]")
+                        msg.raw['text'] = '\n\n'.join(part for part in (title, des, notice) if part)
+                        return self.wechat_text_msg(msg)
                     elif appmsg_type == '6':  # File
                         title = self.get_node_text(xml, './appmsg/title', "")
                         return self.wechat_shared_file_msg(msg, source, title)
