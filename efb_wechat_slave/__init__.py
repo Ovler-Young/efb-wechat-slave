@@ -62,6 +62,9 @@ class WeChatChannel(SlaveChannel):
     # True only while logging in again, never during the first login.
     _relogin_in_progress: bool = False
     _stop_polling_event: threading.Event = threading.Event()
+    # Timer of the next contact refresh; None when no refresh is scheduled.
+    _contact_refresh_timer = None
+    _contact_refresh_lock = threading.Lock()
 
     config: Dict[str, Any] = dict()
 
@@ -81,6 +84,8 @@ class WeChatChannel(SlaveChannel):
     MAX_SEND_FILE_SIZE: int = 25 * 2 ** 20  # For files, audio, and video
     # Seconds an outgoing message waits for a re-login in progress to finish
     REAUTH_WAIT_TIMEOUT: float = 120
+    # Seconds between two refreshes of the contact list while logged in
+    CONTACT_REFRESH_INTERVAL: float = 24 * 60 * 60
     SYSTEM_ACCOUNTS: Final = {
         # TRANSLATORS: Translate this to the corresponding display name of the WeChat system account. Guessed names are not accepted.
         'filehelper': _('filehelper'),
@@ -305,6 +310,76 @@ class WeChatChannel(SlaveChannel):
         if not self.done_reauth.wait(self.REAUTH_WAIT_TIMEOUT):
             raise EFBMessageError(
                 self._("WeChat is re-logging in, please retry later."))
+
+    def _retire_puid_map(self, bot):
+        """Stop the chat ID mapping of a replaced session from being saved.
+
+        Otherwise it would overwrite the mapping of the session that
+        replaced it when the process exits. Never raises.
+        """
+        puid_map = getattr(bot, 'puid_map', None)
+        if puid_map is None:
+            return
+        try:
+            puid_map.close()
+        except Exception:
+            self.logger.exception(
+                "Failed to retire the chat ID mapping of the previous session.")
+
+    def _schedule_contact_refresh(self, bot: wxpy.Bot, after_refresh: bool = False):
+        """Schedule the next contact refresh of a login session.
+
+        Nothing is scheduled for a session that is no longer in use or once
+        the channel is stopping, nor after a refresh that was cancelled
+        while it was running.
+        """
+        with self._contact_refresh_lock:
+            if bot is not self.bot or self._stop_polling_event.is_set():
+                return
+            if after_refresh and self._contact_refresh_timer is None:
+                return
+            if self._contact_refresh_timer:
+                self._contact_refresh_timer.cancel()
+            timer = threading.Timer(self.CONTACT_REFRESH_INTERVAL,
+                                    self._refresh_contacts, args=(bot,))
+            timer.name = "EWS contact refresh timer"
+            timer.daemon = True
+            self._contact_refresh_timer = timer
+            timer.start()
+
+    def _cancel_contact_refresh(self):
+        """Cancel the scheduled contact refresh, if any."""
+        with self._contact_refresh_lock:
+            if self._contact_refresh_timer:
+                self._contact_refresh_timer.cancel()
+            self._contact_refresh_timer = None
+
+    def _refresh_contacts(self, bot: wxpy.Bot):
+        """Fetch the contact list and store the latest profile of every chat.
+
+        Chat IDs are matched by profile when logging in again, so the stored
+        profiles must follow the changes made during a long session. Runs
+        on a timer and schedules the next run itself. Never raises: a failed
+        refresh is only logged.
+        """
+        try:
+            if bot is not self.bot or self._stop_polling_event.is_set():
+                return
+            if not bot.alive:
+                self.logger.debug("Not logged in, contact refresh skipped.")
+                return
+            self.logger.debug("Refreshing contacts...")
+            bot.core.get_contact(update=True)
+            refreshed = 0
+            for chat in bot.chats():
+                # Looking up the ID of a chat stores its latest profile.
+                if chat.puid:
+                    refreshed += 1
+            self.logger.debug("Refreshed %s contacts.", refreshed)
+        except Exception:
+            self.logger.exception("Failed to refresh contacts.")
+        finally:
+            self._schedule_contact_refresh(bot, after_refresh=True)
 
     def exit_callback(self):
         # Don't send prompt if there's nowhere to send.
@@ -735,7 +810,9 @@ class WeChatChannel(SlaveChannel):
         try:
             self.master_qr_picture_id = None
             qr_callback = getattr(self, qr_reload, self.master_qr_code)
+            previous_bot = getattr(self, 'bot', None)
             if getattr(self, 'bot', None):  # if a bot exists
+                self._cancel_contact_refresh()
                 self.bot.cleanup()
             with coordinator.mutex:
                 self.bot: wxpy.Bot = wxpy.Bot(cache_path=str(efb_utils.get_data_path(self.channel_id) / "wxpy.pkl"),
@@ -743,10 +820,12 @@ class WeChatChannel(SlaveChannel):
                                               logout_callback=self.exit_callback,
                                               user_agent=self.flag('user_agent'),
                                               start_immediately=not first_start)
+                self._retire_puid_map(previous_bot)
                 self.bot.enable_puid(
                     efb_utils.get_data_path(self.channel_id) / "wxpy_puid.pkl",
                     self.flag('puid_logs')
                 )
+                self._schedule_contact_refresh(self.bot)
                 if hasattr(self, "slave_message"):
                     self.slave_message.bot = self.bot
                     self.slave_message.wechat_msg_register()
@@ -803,6 +882,7 @@ class WeChatChannel(SlaveChannel):
             return chat
 
     def stop_polling(self):
+        self._cancel_contact_refresh()
         self.bot.cleanup()
         if not self._stop_polling_event.is_set():
             self._stop_polling_event.set()

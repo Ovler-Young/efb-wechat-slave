@@ -84,6 +84,10 @@ class PuidMap(object):
     DUMP_TIMEOUT = 30
     """Number of seconds before auto dump upon lookups."""
 
+    PLACEHOLDER_NICK_NAMES = frozenset(("该账号已注销", "该账号已冻结", "账号已迁移"))
+    """Nicknames shown for deleted, frozen or migrated accounts. Unrelated
+    accounts share them, so they never identify a chat by common attributes."""
+
     logger: Optional[logging.Logger] = None
 
     def __init__(self, path, puid_logs=None):
@@ -116,6 +120,7 @@ class PuidMap(object):
             self.load()
 
         self._dump_task: Optional[threading.Timer] = None
+        self._closed = False
 
         atexit.register(self.dump)
 
@@ -192,10 +197,15 @@ class PuidMap(object):
                         break
 
             if puid:
-                new_caption = self.merge_captions(self.captions.get_key(puid), chat_caption)
-                value_updated = chat_caption != new_caption
+                old_caption = self.captions.get_key(puid)
+                new_caption = self.merge_captions(old_caption, chat_caption)
+                value_updated = old_caption != new_caption
+                if old_caption is None and new_caption in self.captions:
+                    # Chats with identical common attributes take turns holding
+                    # the single entry for them: nothing new to save.
+                    value_updated = False
                 if value_updated:
-                    self.log("Updating common attributes of %s from %s to %s", puid, chat_caption, new_caption)
+                    self.log("Updating common attributes of %s from %s to %s", puid, old_caption, new_caption)
             else:
                 puid = chat.user_name[-8:]
                 new_caption = self.get_caption(chat)
@@ -223,6 +233,9 @@ class PuidMap(object):
 
     def activate_dump(self):
         """Activate dump timeout"""
+        if self._closed:
+            return
+
         if self._dump_task:
             self._dump_task.cancel()
 
@@ -233,6 +246,8 @@ class PuidMap(object):
         """
         保存映射数据
         """
+        if self._closed:
+            return
 
         # Safe dump
         data = (self.user_names, self.wxids, self.remark_names, self.captions)
@@ -263,6 +278,28 @@ class PuidMap(object):
         self.log("Dumped - wxids: %s", self.wxids)
         self.log("Dumped - remark_names: %s", self.remark_names)
         self.log("Dumped - captions: %s", self.captions)
+
+    def close(self):
+        """
+        Retire this map, for example when another map takes over its file.
+
+        Changes still waiting for the next automatic dump are written once.
+        After that the map never writes again, neither from a pending timer
+        nor at exit. Lookups in memory keep working.
+        """
+        dump_task = self._dump_task
+        try:
+            if dump_task:
+                dump_task.cancel()
+                self.dump()
+        finally:
+            with self._thread_lock:
+                self._closed = True
+                # A lookup may have scheduled another dump in the meantime.
+                dump_task, self._dump_task = self._dump_task, None
+            if dump_task:
+                dump_task.cancel()
+            atexit.unregister(self.dump)
 
     def load(self, recur=False):
         """
@@ -315,6 +352,8 @@ class PuidMap(object):
 
     def match_captions(self, old: Caption, new: Caption) -> bool:
         """Full match of a 5-value tuple only when both side has a value"""
+        if new[0] in self.PLACEHOLDER_NICK_NAMES:
+            return False
         if new[0] and old:
             for i in range(5):
                 if old[i] and new[i] and old[i] != new[i]:
