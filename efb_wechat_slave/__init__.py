@@ -77,6 +77,8 @@ class WeChatChannel(SlaveChannel):
     # Constants
     MAX_FILE_SIZE: int = 5 * 2 ** 20
     MAX_SEND_FILE_SIZE: int = 25 * 2 ** 20  # For files, audio, and video
+    # Seconds an outgoing message waits for a re-login in progress to finish
+    REAUTH_WAIT_TIMEOUT: float = 120
     SYSTEM_ACCOUNTS: Final = {
         # TRANSLATORS: Translate this to the corresponding display name of the WeChat system account. Guessed names are not accepted.
         'filehelper': _('filehelper'),
@@ -239,7 +241,7 @@ class WeChatChannel(SlaveChannel):
             self.master_qr_picture_id = None
         elif status == 200:
             msg.type = MsgType.Text
-            msg.text = self._("Successfully logged in.")
+            msg.text = self._("Scanned successfully, loading contacts…")
             self.master_qr_picture_id = None
         elif uuid != self.qr_uuid:
             msg.type = MsgType.Image
@@ -258,6 +260,37 @@ class WeChatChannel(SlaveChannel):
                 self.master_qr_picture_id = msg.uid
         if status in (200, 201) or uuid != self.qr_uuid:
             coordinator.send_message(msg)
+
+    def _notify_master(self, text: str):
+        """Send a text notice to the master channel. Never raises."""
+        try:
+            if not getattr(coordinator, 'master', None):
+                return
+            coordinator.send_message(Message(
+                uid=f"__reauth__.{uuid4()}",
+                type=MsgType.Text,
+                chat=self.user_auth_chat,
+                author=self.user_auth_chat.other,
+                deliver_to=coordinator.master,
+                text=text,
+            ))
+        except Exception:
+            self.logger.exception(
+                "Failed to send a notice to the master channel.")
+
+    def _wait_for_reauth(self):
+        """Wait for a re-login in progress to finish.
+
+        While logging in again, the previous session is no longer usable
+        and chats of the new session are not loaded yet, so anything sent
+        in between has to wait for the new session.
+
+        Raises:
+            EFBMessageError: If the new session is not ready in time.
+        """
+        if not self.done_reauth.wait(self.REAUTH_WAIT_TIMEOUT):
+            raise EFBMessageError(
+                self._("WeChat is re-logging in, please retry later."))
 
     def exit_callback(self):
         # Don't send prompt if there's nowhere to send.
@@ -334,6 +367,8 @@ class WeChatChannel(SlaveChannel):
         """
         if msg.chat == self.user_auth_chat:
             raise EFBChatNotFound
+
+        self._wait_for_reauth()
 
         chat: wxpy.Chat = self.chats.get_wxpy_chat_by_uid(msg.chat.uid)
 
@@ -540,6 +575,7 @@ class WeChatChannel(SlaveChannel):
                 raise EFBOperationNotSupported(
                     self._("You may only recall messages sent via EWS.")
                 )
+            self._wait_for_reauth()
             for i in msg_ids:
                 try:
                     ews_utils.message_id_to_dummy_message(i, self).recall()
@@ -678,24 +714,40 @@ class WeChatChannel(SlaveChannel):
     # endregion [Command functions]
 
     def authenticate(self, qr_reload, first_start=False):
-        self.master_qr_picture_id = None
-        qr_callback = getattr(self, qr_reload, self.master_qr_code)
-        if getattr(self, 'bot', None):  # if a bot exists
-            self.bot.cleanup()
-        with coordinator.mutex:
-            self.bot: wxpy.Bot = wxpy.Bot(cache_path=str(efb_utils.get_data_path(self.channel_id) / "wxpy.pkl"),
-                                          qr_callback=qr_callback,
-                                          logout_callback=self.exit_callback,
-                                          user_agent=self.flag('user_agent'),
-                                          start_immediately=not first_start)
-            self.bot.enable_puid(
-                efb_utils.get_data_path(self.channel_id) / "wxpy_puid.pkl",
-                self.flag('puid_logs')
-            )
+        if not first_start:
+            # Hold outgoing messages until the new session is ready.
+            self.done_reauth.clear()
+        try:
+            self.master_qr_picture_id = None
+            qr_callback = getattr(self, qr_reload, self.master_qr_code)
+            if getattr(self, 'bot', None):  # if a bot exists
+                self.bot.cleanup()
+            with coordinator.mutex:
+                self.bot: wxpy.Bot = wxpy.Bot(cache_path=str(efb_utils.get_data_path(self.channel_id) / "wxpy.pkl"),
+                                              qr_callback=qr_callback,
+                                              logout_callback=self.exit_callback,
+                                              user_agent=self.flag('user_agent'),
+                                              start_immediately=not first_start)
+                self.bot.enable_puid(
+                    efb_utils.get_data_path(self.channel_id) / "wxpy_puid.pkl",
+                    self.flag('puid_logs')
+                )
+                if hasattr(self, "slave_message"):
+                    self.slave_message.bot = self.bot
+                    self.slave_message.wechat_msg_register()
+                self.done_reauth.set()
+        except Exception as e:
+            if first_start:
+                raise
+            self.logger.exception("Failed to log in again.")
+            # Do not keep outgoing messages waiting for a login that has failed.
             self.done_reauth.set()
-            if hasattr(self, "slave_message"):
-                self.slave_message.bot = self.bot
-                self.slave_message.wechat_msg_register()
+            self._notify_master(
+                self._("Failed to log in again: {error}").format(error=e))
+            return
+        if not first_start:
+            self._notify_master(
+                self._("Switch complete, you can send and receive messages now."))
 
     def add_friend(self, username: str = None, verify_information: str = "") -> str:
         if not username:
