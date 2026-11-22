@@ -59,6 +59,8 @@ class WeChatChannel(SlaveChannel):
     logger: logging.Logger = logging.getLogger(
         "plugins.%s.WeChatChannel" % channel_id)
     done_reauth: threading.Event = threading.Event()
+    # True only while logging in again, never during the first login.
+    _relogin_in_progress: bool = False
     _stop_polling_event: threading.Event = threading.Event()
 
     config: Dict[str, Any] = dict()
@@ -197,6 +199,7 @@ class WeChatChannel(SlaveChannel):
             qr = self._('Confirm on your phone.')
             return self.logger.log(99, qr)
         elif status == 200:
+            self._hold_messages_for_relogin()
             qr = self._("Successfully logged in.")
             return self.logger.log(99, qr)
         else:
@@ -240,6 +243,7 @@ class WeChatChannel(SlaveChannel):
             msg.text = self._('Confirm on your phone.')
             self.master_qr_picture_id = None
         elif status == 200:
+            self._hold_messages_for_relogin()
             msg.type = MsgType.Text
             msg.text = self._("Scanned successfully, loading contacts…")
             self.master_qr_picture_id = None
@@ -278,12 +282,22 @@ class WeChatChannel(SlaveChannel):
             self.logger.exception(
                 "Failed to send a notice to the master channel.")
 
-    def _wait_for_reauth(self):
-        """Wait for a re-login in progress to finish.
+    def _hold_messages_for_relogin(self):
+        """Hold outgoing messages once the QR code scan is confirmed.
 
-        While logging in again, the previous session is no longer usable
-        and chats of the new session are not loaded yet, so anything sent
-        in between has to wait for the new session.
+        Only applies while logging in again: the first login has no previous
+        session that messages could be waiting to replace.
+        """
+        if self._relogin_in_progress:
+            self.done_reauth.clear()
+
+    def _wait_for_reauth(self):
+        """Wait for a re-login to finish once its QR code scan is confirmed.
+
+        The hold begins when the scan is confirmed: from then on the new
+        session is loading its chats, so anything sent has to wait until
+        it is ready. Before that, nothing is held and messages go through
+        the previous session as usual.
 
         Raises:
             EFBMessageError: If the new session is not ready in time.
@@ -715,8 +729,9 @@ class WeChatChannel(SlaveChannel):
 
     def authenticate(self, qr_reload, first_start=False):
         if not first_start:
-            # Hold outgoing messages until the new session is ready.
-            self.done_reauth.clear()
+            # Outgoing messages are held from the moment the QR code scan
+            # is confirmed (see the QR code callbacks), not from here.
+            self._relogin_in_progress = True
         try:
             self.master_qr_picture_id = None
             qr_callback = getattr(self, qr_reload, self.master_qr_code)
@@ -745,6 +760,11 @@ class WeChatChannel(SlaveChannel):
             self._notify_master(
                 self._("Failed to log in again: {error}").format(error=e))
             return
+        finally:
+            if not first_start:
+                # However the re-login ended, never leave messages on hold.
+                self._relogin_in_progress = False
+                self.done_reauth.set()
         if not first_start:
             self._notify_master(
                 self._("Switch complete, you can send and receive messages now."))
