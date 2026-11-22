@@ -178,8 +178,33 @@ class Bot(object):
         :param puid_logs: PUID log path
         """
 
-        self.puid_map = PuidMap(path, puid_logs)
+        puid_map = PuidMap(path, puid_logs)
+        try:
+            # Match the whole contact list before any puid can be handed out,
+            # so that puids are kept no matter which chat is looked up first.
+            puid_map.reconcile(self._stored_contacts())
+        except Exception:
+            logger.exception('%s: failed to match the contact list with known puids; until the next login, '
+                             'a chat is given a new puid if its gender, region or signature has changed', self)
+
+        self.puid_map = puid_map
         return self.puid_map
+
+    def _stored_contacts(self):
+        """
+        Friends, official accounts and groups as they are stored locally after
+        login. Nothing is requested from the server, so groups are neither
+        updated nor checked for membership.
+        """
+        chats = []
+        for attr, chat_class in ('memberList', Friend), ('mpList', MP), ('chatroomList', Group):
+            for raw in list(self._retrieve_itchat_storage(attr)):
+                # The name of a group stored without a name and without members
+                # can only be obtained from the server.
+                if chat_class is Group and not (raw.get('NickName') or raw.get('MemberList')):
+                    continue
+                chats.append(chat_class(raw, self))
+        return chats
 
     def except_self(self, chats_or_dicts):
         """
