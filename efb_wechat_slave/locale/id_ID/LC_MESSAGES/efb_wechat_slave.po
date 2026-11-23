@@ -606,3 +606,13 @@ msgstr "[Gambar hongbao, periksa telepon Anda.]"
 #: efb_wechat_slave/wizard.py:154
 msgid "Replace the emoticon in WeChat to emoji. If disabled, the emoticon will be shown as text in square brackets. Enabled by default."
 msgstr "Ganti emotikon di WeChat dengan emoji. Jika dinonaktifkan, emotikon akan ditampilkan sebagai teks dalam kurung siku. Diaktifkan secara bawaan."
+
+#: efb_wechat_slave/__init__.py:435
+#, python-brace-format
+msgid "You have been logged in to WeChat for {days} days. WeChat has usually ended sessions after {limit} days, so you may be logged out soon. To choose when, log out with the “force_log_out” command and log in again at a convenient time."
+msgstr ""
+
+#: efb_wechat_slave/__init__.py:453
+#, python-brace-format
+msgid "This session lasted {days} days and {hours} hours."
+msgstr ""

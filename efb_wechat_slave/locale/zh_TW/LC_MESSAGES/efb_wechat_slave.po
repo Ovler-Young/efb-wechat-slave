@@ -628,3 +628,13 @@ msgstr "[紅包圖片，請轉到手機微信查看]"
 #: efb_wechat_slave/wizard.py:154
 msgid "Replace the emoticon in WeChat to emoji. If disabled, the emoticon will be shown as text in square brackets. Enabled by default."
 msgstr "將微信表情替換為 emoji。停用後，表情將顯示為方括號中的文字。預設啟用。"
+
+#: efb_wechat_slave/__init__.py:435
+#, python-brace-format
+msgid "You have been logged in to WeChat for {days} days. WeChat has usually ended sessions after {limit} days, so you may be logged out soon. To choose when, log out with the “force_log_out” command and log in again at a convenient time."
+msgstr "微信已登入 {days} 天。微信通常會在登入 {limit} 天後結束工作階段，您可能很快會被登出。如想自己決定登出的時間，請在方便時使用「force_log_out」指令註銷並重新登入。"
+
+#: efb_wechat_slave/__init__.py:453
+#, python-brace-format
+msgid "This session lasted {days} days and {hours} hours."
+msgstr "本次登入持續了 {days} 天 {hours} 小時。"

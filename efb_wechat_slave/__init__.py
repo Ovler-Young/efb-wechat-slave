@@ -65,6 +65,8 @@ class WeChatChannel(SlaveChannel):
     # Timer of the next contact refresh; None when no refresh is scheduled.
     _contact_refresh_timer = None
     _contact_refresh_lock = threading.Lock()
+    # Timer of the notice sent before the session usually ends; None when not scheduled.
+    _session_notice_timer = None
 
     config: Dict[str, Any] = dict()
 
@@ -88,6 +90,10 @@ class WeChatChannel(SlaveChannel):
     CONTACT_REFRESH_INTERVAL: float = 24 * 60 * 60
     # Seconds to connect, and to wait for data, when fetching the contact list for a refresh
     CONTACT_REFRESH_TIMEOUT = (10, 60)
+    # Days after login when the user is told the session may end soon
+    SESSION_NOTICE_DAYS: int = 30
+    # Days after login when WeChat has usually ended the session
+    SESSION_EXPIRY_DAYS: int = 31
     SYSTEM_ACCOUNTS: Final = {
         # TRANSLATORS: Translate this to the corresponding display name of the WeChat system account. Guessed names are not accepted.
         'filehelper': _('filehelper'),
@@ -383,6 +389,55 @@ class WeChatChannel(SlaveChannel):
         finally:
             self._schedule_contact_refresh(bot, after_refresh=True)
 
+    @staticmethod
+    def _login_time(bot):
+        """When the session of the bot logged in, in seconds since the epoch.
+
+        Taken from the login time saved with the session, which is kept
+        across restarts. It is in milliseconds and grows by one at every
+        poll, so it stays accurate to a few minutes. None if unknown.
+        """
+        login_info = getattr(getattr(bot, 'core', None), 'loginInfo', None)
+        login_time = login_info.get('logintime') if isinstance(login_info, dict) else None
+        if not isinstance(login_time, (int, float)):
+            return None
+        return login_time / 1000
+
+    def _schedule_session_notice(self, bot: wxpy.Bot):
+        """Schedule the notice that the session may end soon, replacing any earlier one.
+
+        If that time has already passed, the notice is sent right away.
+        """
+        self._cancel_session_notice()
+        login_time = self._login_time(bot)
+        if login_time is None or self._stop_polling_event.is_set():
+            return
+        notice_time = login_time + self.SESSION_NOTICE_DAYS * 24 * 60 * 60
+        timer = threading.Timer(max(0.0, notice_time - time.time()),
+                                self._send_session_notice, args=(bot,))
+        timer.name = "EWS session notice timer"
+        timer.daemon = True
+        self._session_notice_timer = timer
+        timer.start()
+
+    def _cancel_session_notice(self):
+        """Cancel the scheduled session notice, if any."""
+        if self._session_notice_timer:
+            self._session_notice_timer.cancel()
+        self._session_notice_timer = None
+
+    def _send_session_notice(self, bot: wxpy.Bot):
+        """Tell the user the session may end soon, while it is still in use."""
+        if bot is not self.bot or self._stop_polling_event.is_set() or not bot.alive:
+            return
+        days = int((time.time() - self._login_time(bot)) // (24 * 60 * 60))
+        self._notify_master(self._(
+            "You have been logged in to WeChat for {days} days. WeChat has usually "
+            "ended sessions after {limit} days, so you may be logged out soon. To "
+            "choose when, log out with the “force_log_out” command and log in "
+            "again at a convenient time."
+        ).format(days=days, limit=self.SESSION_EXPIRY_DAYS))
+
     def exit_callback(self):
         # Don't send prompt if there's nowhere to send.
         if not getattr(coordinator, 'master', None):
@@ -391,12 +446,17 @@ class WeChatChannel(SlaveChannel):
         self.logger.debug('Calling exit callback...')
         if self._stop_polling_event.is_set():
             return
+        text = self._("WeChat server has logged you out. Please log in again when you are ready.")
+        login_time = self._login_time(self.bot)
+        if login_time is not None:
+            days, seconds = divmod(int(time.time() - login_time), 24 * 60 * 60)
+            text += "\n" + self._("This session lasted {days} days and {hours} hours.").format(
+                days=days, hours=seconds // 3600)
         msg = Message(
             chat=self.user_auth_chat,
             author=self.user_auth_chat.other,
             deliver_to=coordinator.master,
-            text=self._(
-                "WeChat server has logged you out. Please log in again when you are ready."),
+            text=text,
             uid=f"__reauth__.{uuid4()}",
             type=MsgType.Text,
         )
@@ -416,6 +476,8 @@ class WeChatChannel(SlaveChannel):
 
     def poll(self):
         self.bot.start()
+        # Scheduled here for the first login, once the master channel is ready.
+        self._schedule_session_notice(self.bot)
         self._stop_polling_event.wait()
         # while not self.stop_polling:
         #     if not self.bot.alive:
@@ -815,6 +877,7 @@ class WeChatChannel(SlaveChannel):
             previous_bot = getattr(self, 'bot', None)
             if getattr(self, 'bot', None):  # if a bot exists
                 self._cancel_contact_refresh()
+                self._cancel_session_notice()
                 self.bot.cleanup()
             with coordinator.mutex:
                 self.bot: wxpy.Bot = wxpy.Bot(cache_path=str(efb_utils.get_data_path(self.channel_id) / "wxpy.pkl"),
@@ -828,6 +891,8 @@ class WeChatChannel(SlaveChannel):
                     self.flag('puid_logs')
                 )
                 self._schedule_contact_refresh(self.bot)
+                if not first_start:
+                    self._schedule_session_notice(self.bot)
                 if hasattr(self, "slave_message"):
                     self.slave_message.bot = self.bot
                     self.slave_message.wechat_msg_register()
@@ -885,6 +950,7 @@ class WeChatChannel(SlaveChannel):
 
     def stop_polling(self):
         self._cancel_contact_refresh()
+        self._cancel_session_notice()
         self.bot.cleanup()
         if not self._stop_polling_event.is_set():
             self._stop_polling_event.set()

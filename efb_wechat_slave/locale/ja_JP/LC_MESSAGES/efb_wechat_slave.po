@@ -629,3 +629,13 @@ msgstr "[紅包の画像です。お使いのスマートフォンをご確認�
 #: efb_wechat_slave/wizard.py:154
 msgid "Replace the emoticon in WeChat to emoji. If disabled, the emoticon will be shown as text in square brackets. Enabled by default."
 msgstr "WeChat の表情を emoji に置き換える。無効にすると、表情は角括弧で囲まれたテキストとして表示される。デフォルトでは有効。"
+
+#: efb_wechat_slave/__init__.py:435
+#, python-brace-format
+msgid "You have been logged in to WeChat for {days} days. WeChat has usually ended sessions after {limit} days, so you may be logged out soon. To choose when, log out with the “force_log_out” command and log in again at a convenient time."
+msgstr ""
+
+#: efb_wechat_slave/__init__.py:453
+#, python-brace-format
+msgid "This session lasted {days} days and {hours} hours."
+msgstr ""

@@ -1,4 +1,5 @@
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -59,6 +60,7 @@ def channel(monkeypatch, tmp_path):
                         channel.sent_to_master.append)
     yield channel
     channel._cancel_contact_refresh()
+    channel._cancel_session_notice()
 
 
 @pytest.fixture
@@ -351,3 +353,60 @@ def test_failed_login_leaves_previous_id_mapping_in_charge(channel, monkeypatch)
     old_session.puid_map.close.assert_not_called()
     assert not is_pending(old_timer)
     assert channel._contact_refresh_timer is None
+
+
+def logged_in_since(seconds_ago):
+    """A session whose saved login time is the given number of seconds ago."""
+    session = Mock(name="session", alive=True)
+    session.core.loginInfo = {"logintime": int((time.time() - seconds_ago) * 1e3)}
+    return session
+
+
+def test_session_notice_is_due_30_days_after_login_and_moves_with_a_new_login(
+        channel, monkeypatch):
+    old_session = logged_in_since(10 * ONE_DAY)
+    channel.bot = old_session
+    channel._schedule_session_notice(old_session)
+    old_timer = channel._session_notice_timer
+    assert is_pending(old_timer) and old_timer.daemon
+    assert old_timer.interval == pytest.approx(20 * ONE_DAY, abs=60)
+
+    new_session = logged_in_since(0)
+    log_in(channel, monkeypatch, new_session)
+
+    assert not is_pending(old_timer)
+    timer = channel._session_notice_timer
+    assert is_pending(timer) and timer.args == (new_session,)
+    assert timer.interval == pytest.approx(30 * ONE_DAY, abs=60)
+
+
+def test_session_notice_already_due_at_start_up_is_sent_once(channel):
+    channel.bot = logged_in_since(30 * ONE_DAY + 3600)
+    polling = threading.Thread(target=channel.poll)
+    polling.start()
+    deadline = time.time() + 5
+    while not channel.sent_to_master and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.1)
+
+    channel.stop_polling()
+    polling.join(5)
+
+    notice = ("You have been logged in to WeChat for 30 days. WeChat has usually "
+              "ended sessions after 31 days, so you may be logged out soon. To "
+              "choose when, log out with the “force_log_out” command and log in "
+              "again at a convenient time.")
+    assert [msg.text for msg in channel.sent_to_master] == [notice]
+    assert channel._session_notice_timer is None
+
+
+def test_logout_notice_states_how_long_the_session_lasted(channel):
+    logged_out_text = "WeChat server has logged you out. Please log in again when you are ready."
+    channel.bot = logged_in_since(3 * ONE_DAY + 5 * 3600 + 600)
+    channel.exit_callback()
+    channel.bot = Mock(name="session with unknown login time")
+    channel.exit_callback()
+
+    assert [msg.text for msg in channel.sent_to_master] == [
+        logged_out_text + "\nThis session lasted 3 days and 5 hours.",
+        logged_out_text]
