@@ -1083,3 +1083,29 @@ def test_enabling_ids_survives_a_failure_to_match_the_contact_list(login, tmp_pa
     assert puid_map.get_puid(Friend(unchanged_now, bot)) == unchanged
     assert puid_map.get_puid(Friend(changed_now, bot)) == changed_now["UserName"][-8:]
     assert changed_now["UserName"][-8:] != old
+
+
+def test_group_without_name_or_members_is_looked_up_without_waiting_on_itself(login):
+    puid_map = login()
+    nameless = raw_group(None)
+    requests = []
+
+    def update_chatroom(user_name, members_details=False):
+        requests.append(user_name)
+        return dict(nameless)
+
+    bot = SimpleNamespace(puid_map=puid_map, core=SimpleNamespace(update_chatroom=update_chatroom))
+    results = []
+    lookup = threading.Thread(target=lambda: results.append(Group(dict(nameless), bot).puid), daemon=True)
+    lookup.start()
+    lookup.join(5)
+
+    assert not lookup.is_alive()
+    # Its name would come from its members, and it has none: no ID for now.
+    assert results == [None]
+    # The server is asked for its members once.
+    assert requests == [nameless["UserName"]]
+    assert nameless["UserName"] not in puid_map.user_names
+
+    family = Group(raw_group("Family"), bot)
+    assert family.puid == new_puid_of(family)

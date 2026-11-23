@@ -272,7 +272,7 @@ def update_local_uin(core, msg):
     return r
 
 
-def get_contact(self, update=False):
+def get_contact(self, update=False, timeout=None):
     if not update:
         return utils.contact_deep_copy(self, self.chatroomList)
 
@@ -283,8 +283,14 @@ def get_contact(self, update=False):
             'ContentType': 'application/json; charset=UTF-8',
             'User-Agent': self.user_agent, }
         try:
-            r = self.s.get(url, headers=headers)
+            r = self.s.get(url, headers=headers, timeout=timeout)
+            if timeout is not None:
+                r.raise_for_status()
         except:
+            # The fallback below makes one request without a time limit per
+            # group, so a caller that limits the fetch gets the failure instead.
+            if timeout is not None:
+                raise
             logger.info('Failed to fetch contact, that may because of the amount of your chatrooms')
             for chatroom in self.get_chatrooms():
                 self.update_chatroom(chatroom['UserName'], detailedMember=True)

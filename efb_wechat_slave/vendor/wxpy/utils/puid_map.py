@@ -7,6 +7,8 @@ import difflib
 import os
 import pickle
 import secrets
+import shutil
+import time
 import logging
 import logging.handlers
 
@@ -135,6 +137,12 @@ class PuidMap(object):
     DUMP_TIMEOUT = 30
     """Number of seconds before auto dump upon lookups."""
 
+    CLOSE_TIMEOUT = 5
+    """
+    Number of seconds retiring a map waits in all for a save or lookup in
+    progress to finish. After that it is retired without waiting further.
+    """
+
     PLACEHOLDER_NICK_NAMES = frozenset(("该账号已注销", "该账号已冻结", "账号已迁移"))
     """Nicknames shown for deleted, frozen or migrated accounts. Unrelated
     accounts share them, so they never identify a chat by common attributes."""
@@ -163,6 +171,11 @@ class PuidMap(object):
         self.captions = TwoWayDict()
 
         self._thread_lock = threading.Lock()
+        # Held while the map is written to disk, so that saves never overlap.
+        self._dump_lock = threading.Lock()
+        # Per thread: user_names of the chats being read for a lookup. Reading
+        # a chat may look up its own PUID again, e.g. for the name of a group.
+        self._reading = threading.local()
 
         # PUIDs handed out by this instance, i.e. during the current login session,
         # each with the user_names of the chats it was given to. Kept in memory only.
@@ -221,8 +234,14 @@ class PuidMap(object):
         :rtype: str
         """
 
+        if chat.user_name in self._chats_being_read():
+            # Reading the chat needs its own PUID: it cannot be identified yet.
+            return
+
+        # The chat is read before taking the lock: reading it may need a PUID.
+        info = self._snapshot(chat)
+
         with self._thread_lock:
-            info = self._snapshot(chat)
             self.log("Querying chat for PUID: %s", info.label)
 
             if info.user_name in PuidMap.SYSTEM_ACCOUNTS:
@@ -399,33 +418,48 @@ class PuidMap(object):
                 self.activate_dump()
                 self.log("Refreshing dump delay as value is changed.")
 
+    def _chats_being_read(self) -> set:
+        """The user_names of the chats being read in the current thread."""
+        names = getattr(self._reading, 'names', None)
+        if names is None:
+            names = self._reading.names = set()
+        return names
+
     def _snapshot(self, chat: 'Chat') -> _ChatInfo:
-        """Read the attributes used for matching from a chat."""
+        """
+        Read the attributes used for matching from a chat. Meanwhile, a
+        lookup of the same chat in this thread finds no PUID.
+        """
         user_name = chat.user_name
-        label = str(chat) if self.logger else None
+        reading = self._chats_being_read()
+        reading.add(user_name)
+        try:
+            label = str(chat) if self.logger else None
 
-        if user_name in PuidMap.SYSTEM_ACCOUNTS:
-            return _ChatInfo(label, user_name, None, None, False)
+            if user_name in PuidMap.SYSTEM_ACCOUNTS:
+                return _ChatInfo(label, user_name, None, None, False)
 
-        # 5 common attributes for matching:
-        # 1. Chat base name
-        # 2. Gender (for user)
-        # 3. Province (for user)
-        # 4. City (for user)
-        # 5. Signature (for user)
-        caption = self.get_caption(chat)
+            # 5 common attributes for matching:
+            # 1. Chat base name
+            # 2. Gender (for user)
+            # 3. Province (for user)
+            # 4. City (for user)
+            # 5. Signature (for user)
+            caption = self.get_caption(chat)
 
-        # 3 of the stable attributes:
-        # 1. Web WeChat temporary ID
-        # 2. wxid (true permanent ID, almost unavailable)
-        # 3. Remark name defined by user (Does this work?)
-        attrs = (
-            user_name,
-            chat.wxid,
-            getattr(chat, 'remark_name', None),
-        )
+            # 3 of the stable attributes:
+            # 1. Web WeChat temporary ID
+            # 2. wxid (true permanent ID, almost unavailable)
+            # 3. Remark name defined by user (Does this work?)
+            attrs = (
+                user_name,
+                chat.wxid,
+                getattr(chat, 'remark_name', None),
+            )
 
-        return _ChatInfo(label, user_name, attrs, caption, self._is_contact(chat))
+            return _ChatInfo(label, user_name, attrs, caption, self._is_contact(chat))
+        finally:
+            reading.discard(user_name)
 
     @staticmethod
     def _is_contact(chat: 'Chat') -> bool:
@@ -693,38 +727,60 @@ class PuidMap(object):
         """
         保存映射数据
         """
-        if self._closed:
-            return
+        self._dump()
 
-        # Safe dump
-        data = (self.user_names, self.wxids, self.remark_names, self.captions)
-        temp_path = f"{self.path}.{secrets.token_urlsafe(8)}"
-        bak_path = f"{self.path}.bak"
+    def _dump(self, timeout=-1) -> bool:
+        """
+        Save the map, unless it is retired. Saves never overlap: this waits
+        for a save in progress, at most `timeout` seconds if not negative.
 
-        file_io_logger.debug(f"Write PUID mapping to {temp_path}.")
-        with open(temp_path, "wb") as f:
-            pickle.dump(data, f)
-            f.flush()
-            os.fsync(f.fileno())
+        :return: `False` if the wait timed out and nothing was done
+        """
+        if not self._dump_lock.acquire(timeout=timeout):
+            return False
+        try:
+            if self._closed:
+                return True
 
-        if os.path.exists(self.path):
-            file_io_logger.debug(f"Backup old PUID mapping to {bak_path}")
-            if os.path.exists(bak_path):
-                os.unlink(bak_path)
-            os.rename(self.path, bak_path)
+            # What a pending automatic dump would save is saved now.
+            dump_task, self._dump_task = self._dump_task, None
+            if dump_task:
+                dump_task.cancel()
 
-        file_io_logger.debug(f"Move new PUID mapping from {temp_path} to {self.path}")
-        os.replace(temp_path, self.path)
-        file_io_logger.debug(f"PUID mapping overwrite completed.")
+            # Safe dump: the map file exists at every moment once written.
+            data = (self.user_names, self.wxids, self.remark_names, self.captions)
+            temp_path = f"{self.path}.{secrets.token_urlsafe(8)}"
+            bak_path = f"{self.path}.bak"
 
-        if self._dump_task:
-            self._dump_task = None
+            file_io_logger.debug(f"Write PUID mapping to {temp_path}.")
+            with open(temp_path, "wb") as f:
+                pickle.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
 
-        self.log("Successfully dumped PUID map to: %s", self.path)
-        self.log("Dumped - user_names: %s", self.user_names)
-        self.log("Dumped - wxids: %s", self.wxids)
-        self.log("Dumped - remark_names: %s", self.remark_names)
-        self.log("Dumped - captions: %s", self.captions)
+            if os.path.exists(self.path):
+                file_io_logger.debug(f"Backup old PUID mapping to {bak_path}")
+                bak_temp_path = f"{bak_path}.{secrets.token_urlsafe(8)}"
+                shutil.copyfile(self.path, bak_temp_path)
+                os.replace(bak_temp_path, bak_path)
+
+            if self._closed:
+                # Retired while saving: another map may own the file by now.
+                os.unlink(temp_path)
+                return True
+
+            file_io_logger.debug(f"Move new PUID mapping from {temp_path} to {self.path}")
+            os.replace(temp_path, self.path)
+            file_io_logger.debug(f"PUID mapping overwrite completed.")
+
+            self.log("Successfully dumped PUID map to: %s", self.path)
+            self.log("Dumped - user_names: %s", self.user_names)
+            self.log("Dumped - wxids: %s", self.wxids)
+            self.log("Dumped - remark_names: %s", self.remark_names)
+            self.log("Dumped - captions: %s", self.captions)
+            return True
+        finally:
+            self._dump_lock.release()
 
     def close(self):
         """
@@ -733,20 +789,34 @@ class PuidMap(object):
         Changes still waiting for the next automatic dump are written once.
         After that the map never writes again, neither from a pending timer
         nor at exit. Lookups in memory keep working.
+
+        Waits at most `CLOSE_TIMEOUT` seconds in all for a save or lookup in
+        progress; the map is retired all the same once that time is up.
         """
-        dump_task = self._dump_task
+        deadline = time.monotonic() + self.CLOSE_TIMEOUT
         try:
-            if dump_task:
-                dump_task.cancel()
-                self.dump()
+            # A save already running may be the one that holds the latest changes.
+            pending = self._dump_task or self._dump_lock.locked()
+            if pending and not self._dump(self.CLOSE_TIMEOUT):
+                file_io_logger.warning(
+                    "Timed out waiting for a save of the PUID mapping in progress; "
+                    "retiring it without saving its latest changes.")
         finally:
-            with self._thread_lock:
+            locked = self._thread_lock.acquire(timeout=max(0.0, deadline - time.monotonic()))
+            try:
                 self._closed = True
                 # A lookup may have scheduled another dump in the meantime.
                 dump_task, self._dump_task = self._dump_task, None
+            finally:
+                if locked:
+                    self._thread_lock.release()
             if dump_task:
                 dump_task.cancel()
             atexit.unregister(self.dump)
+            if not locked:
+                file_io_logger.warning(
+                    "Timed out waiting for a PUID lookup in progress; "
+                    "the PUID mapping is retired all the same.")
 
     def load(self, recur=False):
         """

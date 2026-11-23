@@ -86,6 +86,8 @@ class WeChatChannel(SlaveChannel):
     REAUTH_WAIT_TIMEOUT: float = 120
     # Seconds between two refreshes of the contact list while logged in
     CONTACT_REFRESH_INTERVAL: float = 24 * 60 * 60
+    # Seconds to connect, and to wait for data, when fetching the contact list for a refresh
+    CONTACT_REFRESH_TIMEOUT = (10, 60)
     SYSTEM_ACCOUNTS: Final = {
         # TRANSLATORS: Translate this to the corresponding display name of the WeChat system account. Guessed names are not accepted.
         'filehelper': _('filehelper'),
@@ -369,7 +371,7 @@ class WeChatChannel(SlaveChannel):
                 self.logger.debug("Not logged in, contact refresh skipped.")
                 return
             self.logger.debug("Refreshing contacts...")
-            bot.core.get_contact(update=True)
+            bot.core.get_contact(update=True, timeout=self.CONTACT_REFRESH_TIMEOUT)
             refreshed = 0
             for chat in bot.chats():
                 # Looking up the ID of a chat stores its latest profile.

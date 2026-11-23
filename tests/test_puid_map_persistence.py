@@ -1,4 +1,7 @@
+import logging
 import pickle
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -154,6 +157,135 @@ def test_replaced_map_never_overwrites_its_successor(
     after_exit = open_map()
     assert after_exit.user_names["@new-session-00000002"] == new_puid
     assert "@old-session-00000003" not in after_exit.user_names
+
+
+def test_concurrent_saves_never_fail_or_leave_the_map_file_missing(
+        open_map, map_path, monkeypatch):
+    monkeypatch.setattr(PuidMap, "DUMP_TIMEOUT", 0.001)
+    # Failures in any thread, including those of automatic dumps.
+    errors = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args.exc_value))
+    threads_before = set(threading.enumerate())
+    puid_map = open_map()
+    puid = puid_map.get_puid(contact("@friend-00000001", "Alice"))
+    puid_map.dump()
+
+    watching = threading.Event()
+    missing = []
+
+    def watch():
+        while watching.is_set():
+            if not map_path.exists():
+                missing.append(True)
+
+    def save():
+        for _ in range(25):
+            puid_map.dump()
+            puid_map.activate_dump()
+
+    watching.set()
+    watcher = threading.Thread(target=watch)
+    watcher.start()
+    savers = [threading.Thread(target=save) for _ in range(8)]
+    for saver in savers:
+        saver.start()
+    for saver in savers:
+        saver.join(10)
+    # Let the automatic dumps scheduled meanwhile finish as well.
+    for thread in set(threading.enumerate()) - threads_before:
+        if isinstance(thread, threading.Timer):
+            thread.join(5)
+    watching.clear()
+    watcher.join(5)
+
+    assert errors == []
+    assert missing == []
+    for path in (map_path, map_path.with_name(map_path.name + ".bak")):
+        assert pickle.loads(path.read_bytes())[0]["@friend-00000001"] == puid
+
+
+def test_saving_cancels_the_automatic_dump_it_makes_unnecessary(open_map):
+    puid_map = open_map()
+    puid_map.get_puid(contact("@friend-00000001", "Alice"))
+    timer = puid_map._dump_task
+    assert timer is not None
+
+    puid_map.dump()
+
+    # A timer that is not cancelled would wait for its full delay.
+    timer.join(1)
+    assert not timer.is_alive()
+    assert puid_map._dump_task is None
+
+
+def test_retiring_a_map_while_it_saves_itself_keeps_that_save(open_map, monkeypatch):
+    monkeypatch.setattr(PuidMap, "DUMP_TIMEOUT", 0.01)
+    saving, go_on = threading.Event(), threading.Event()
+
+    def slow_dump(data, f):
+        if not saving.is_set():
+            saving.set()
+            go_on.wait(5)
+        pickle.dump(data, f)
+
+    monkeypatch.setattr(puid_map_module, "pickle", SimpleNamespace(dump=slow_dump, load=pickle.load))
+    puid_map = open_map()
+    puid = puid_map.get_puid(contact("@friend-00000001", "Alice"))
+    # The automatic save has started, and is still writing.
+    assert saving.wait(5)
+
+    retiring = threading.Thread(target=puid_map.close)
+    retiring.start()
+    retiring.join(0.2)
+    go_on.set()
+    retiring.join(5)
+    assert not retiring.is_alive()
+
+    # The map that takes over the file finds the chat.
+    assert open_map().user_names["@friend-00000001"] == puid
+
+
+@pytest.mark.parametrize("busy_with", ["_thread_lock", "_dump_lock"])
+def test_retiring_a_map_busy_in_another_thread_waits_only_briefly(
+        open_map, map_path, exit_hooks, monkeypatch, caplog, busy_with):
+    monkeypatch.setattr(PuidMap, "CLOSE_TIMEOUT", 0.2)
+    puid_map = open_map()
+    puid_map.get_puid(contact("@friend-00000001", "Alice"))
+    timer = puid_map._dump_task
+    assert timer is not None
+
+    # Another thread is stuck in a lookup or a save of the map.
+    lock = getattr(puid_map, busy_with)
+    busy, done = threading.Event(), threading.Event()
+
+    def stuck():
+        with lock:
+            busy.set()
+            done.wait(10)
+
+    other = threading.Thread(target=stuck)
+    other.start()
+    assert busy.wait(5)
+
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger=puid_map_module.__name__):
+        puid_map.close()
+    assert time.monotonic() - started < 2
+
+    assert len([record for record in caplog.records if record.levelno == logging.WARNING]) == 1
+    assert exit_hooks.hooks == []
+    assert timer.finished.is_set()
+    assert puid_map._dump_task is None
+    saved = map_path.read_bytes() if map_path.exists() else None
+
+    # Once the other thread is done, the retired map still never writes.
+    done.set()
+    other.join(5)
+    puid_map.dump()
+    puid_map.activate_dump()
+    assert puid_map._dump_task is None
+    timer.function()
+    assert (map_path.read_bytes() if map_path.exists() else None) == saved
 
 
 def test_retiring_a_map_saves_changes_waiting_for_a_dump_once(open_map, map_path):

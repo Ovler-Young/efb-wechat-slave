@@ -3,10 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import requests
 from ehforwarderbot import coordinator
 
 import efb_wechat_slave
 from efb_wechat_slave import WeChatChannel
+from efb_wechat_slave.vendor.itchat.core import Core
 from efb_wechat_slave.vendor.wxpy import MP, Friend, Group
 from efb_wechat_slave.vendor.wxpy.utils import PuidMap
 
@@ -27,7 +29,7 @@ class Session:
         self.core = SimpleNamespace(get_contact=Mock(side_effect=self._fetch))
         self.cleanup = Mock()
 
-    def _fetch(self, update=False):
+    def _fetch(self, update=False, timeout=None):
         self.local_contacts = list(self.server_contacts)
 
     def chats(self):
@@ -64,6 +66,26 @@ def puid_map(tmp_path):
     puid_map = PuidMap(str(tmp_path / "wxpy_puid.pkl"))
     yield puid_map
     puid_map.close()
+
+
+def connection(get):
+    """
+    The connection of a logged-in session, with `get` in place of the
+    network: a response, or an exception to raise. It has one group.
+    """
+    core = Core()
+    core.loginInfo = {"url": "https://wx.example.invalid/cgi-bin/mmwebwx-bin", "skey": "@skey"}
+    core.s.get = Mock(side_effect=get)
+    core.get_chatrooms = Mock(return_value=[{"UserName": "@@group-00000001"}])
+    core.update_chatroom = Mock()
+    return core
+
+
+def http_error(status_code):
+    response = requests.Response()
+    response.status_code = status_code
+    response._content = b"<html>Bad Gateway</html>"
+    return lambda *args, **kwargs: response
 
 
 def use_session(channel, session):
@@ -103,7 +125,8 @@ def test_refresh_stores_latest_profiles_without_changing_ids(channel, puid_map):
 
     channel._refresh_contacts(session)
 
-    session.core.get_contact.assert_called_once_with(update=True)
+    session.core.get_contact.assert_called_once_with(
+        update=True, timeout=channel.CONTACT_REFRESH_TIMEOUT)
     assert [puid_map.captions.get_key(puid) for puid in puids] == [
         ("Alice", 2, "Guangdong", "Guangzhou", "gone fishing"),
         ("Big Family", None, None, None, None),
@@ -129,12 +152,44 @@ def test_failed_refresh_is_only_logged_and_the_next_one_still_scheduled(channel)
     assert is_pending(channel._contact_refresh_timer)
 
 
+@pytest.mark.parametrize("failure", [
+    requests.exceptions.ReadTimeout("read timed out"),
+    requests.exceptions.ConnectTimeout("connect timed out"),
+    requests.exceptions.ConnectionError("network unreachable"),
+    http_error(502),
+], ids=["read timeout", "connect timeout", "network unreachable", "server error"])
+def test_refresh_whose_fetch_fails_is_logged_and_the_next_one_still_scheduled(
+        channel, failure):
+    session = Session()
+    session.core = connection(failure)
+    timer = use_session(channel, session)
+
+    channel._refresh_contacts(session)
+
+    # The fetch is limited in time, and its failure is reported as such,
+    # without trying to fetch the groups one by one.
+    assert session.core.s.get.call_args.kwargs["timeout"] == channel.CONTACT_REFRESH_TIMEOUT
+    channel.logger.exception.assert_called_once()
+    session.core.update_chatroom.assert_not_called()
+    assert channel._contact_refresh_timer is not timer
+    assert is_pending(channel._contact_refresh_timer)
+
+
+def test_contact_fetch_without_time_limit_still_falls_back_to_one_group_at_a_time():
+    core = connection(requests.exceptions.ConnectionError("network unreachable"))
+
+    assert core.get_contact(update=True) == []
+
+    assert core.s.get.call_args.kwargs["timeout"] is None
+    core.update_chatroom.assert_called_once_with("@@group-00000001", detailedMember=True)
+
+
 def test_next_refresh_is_scheduled_only_when_one_has_finished(channel):
     session = Session()
     timer = use_session(channel, session)
     timer_during_fetch = []
     session.core.get_contact.side_effect = \
-        lambda update: timer_during_fetch.append(channel._contact_refresh_timer)
+        lambda **kwargs: timer_during_fetch.append(channel._contact_refresh_timer)
 
     channel._refresh_contacts(session)
 
@@ -149,7 +204,7 @@ def test_next_refresh_is_scheduled_only_when_one_has_finished(channel):
 def test_scheduled_refresh_runs_on_its_own_and_repeats(channel):
     session = Session()
     fetches = threading.Semaphore(0)
-    session.core.get_contact.side_effect = lambda update: fetches.release()
+    session.core.get_contact.side_effect = lambda **kwargs: fetches.release()
     channel.CONTACT_REFRESH_INTERVAL = 0.01
 
     use_session(channel, session)
@@ -209,7 +264,7 @@ def test_refresh_cancelled_while_running_is_not_scheduled_again(channel):
     session = Session()
     use_session(channel, session)
     session.core.get_contact.side_effect = \
-        lambda update: channel._cancel_contact_refresh()
+        lambda **kwargs: channel._cancel_contact_refresh()
 
     channel._refresh_contacts(session)
 
@@ -221,7 +276,7 @@ def test_refresh_running_when_the_channel_starts_to_stop_is_not_scheduled_again(
     session = Session()
     timer = use_session(channel, session)
     session.core.get_contact.side_effect = \
-        lambda update: channel._stop_polling_event.set()
+        lambda **kwargs: channel._stop_polling_event.set()
 
     channel._refresh_contacts(session)
 
