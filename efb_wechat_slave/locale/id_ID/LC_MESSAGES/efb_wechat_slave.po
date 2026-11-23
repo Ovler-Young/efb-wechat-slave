@@ -568,3 +568,41 @@ msgstr ""
 msgid "Congratulations! You have finished the setup wizard for EFB WeChat Slave channel."
 msgstr ""
 
+
+#: efb_wechat_slave/__init__.py:255
+msgid "Scanned successfully, loading contacts…"
+msgstr "Berhasil dipindai, memuat kontak…"
+
+#: efb_wechat_slave/__init__.py:314
+msgid "WeChat is re-logging in, please retry later."
+msgstr "WeChat sedang masuk kembali, harap coba lagi nanti."
+
+#: efb_wechat_slave/__init__.py:618 efb_wechat_slave/__init__.py:635
+#, python-brace-format
+msgid "File size exceeds 25MB limit. File size: {size:.2f}MB"
+msgstr "Ukuran file melebihi batas 25MB. Ukuran file: {size:.2f}MB"
+
+#: efb_wechat_slave/__init__.py:842
+#, python-brace-format
+msgid "Failed to log in again: {error}"
+msgstr "Gagal masuk kembali: {error}"
+
+#: efb_wechat_slave/__init__.py:851
+msgid "Switch complete, you can send and receive messages now."
+msgstr "Peralihan selesai, sekarang Anda dapat mengirim dan menerima pesan."
+
+#: efb_wechat_slave/slave_message.py:336
+msgid "[Chat record preview. Open WeChat to view the full record.]"
+msgstr "[Pratinjau riwayat obrolan. Buka WeChat untuk melihat riwayat lengkap.]"
+
+#: efb_wechat_slave/slave_message.py:374
+msgid "WeChat Channels"
+msgstr ""
+
+#: efb_wechat_slave/slave_message.py:647
+msgid "[Hongbao image, please check your phone.]"
+msgstr "[Gambar hongbao, periksa telepon Anda.]"
+
+#: efb_wechat_slave/wizard.py:154
+msgid "Replace the emoticon in WeChat to emoji. If disabled, the emoticon will be shown as text in square brackets. Enabled by default."
+msgstr "Ganti emotikon di WeChat dengan emoji. Jika dinonaktifkan, emotikon akan ditampilkan sebagai teks dalam kurung siku. Diaktifkan secara bawaan."

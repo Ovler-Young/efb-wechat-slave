@@ -591,3 +591,41 @@ msgstr "===========================================\n"
 msgid "Congratulations! You have finished the setup wizard for EFB WeChat Slave channel."
 msgstr "おめでとうございます！EFB WeChat スレーブチャネルの設定ウィザードが完了しました。"
 
+
+#: efb_wechat_slave/__init__.py:255
+msgid "Scanned successfully, loading contacts…"
+msgstr "スキャン完了。連絡先を読み込んでいます…"
+
+#: efb_wechat_slave/__init__.py:314
+msgid "WeChat is re-logging in, please retry later."
+msgstr "WeChat は再ログイン中です。しばらくしてから再試行してください。"
+
+#: efb_wechat_slave/__init__.py:618 efb_wechat_slave/__init__.py:635
+#, python-brace-format
+msgid "File size exceeds 25MB limit. File size: {size:.2f}MB"
+msgstr "ファイルサイズが 25MB の上限を超えています。ファイルサイズ：{size:.2f}MB"
+
+#: efb_wechat_slave/__init__.py:842
+#, python-brace-format
+msgid "Failed to log in again: {error}"
+msgstr "再ログインに失敗しました：{error}"
+
+#: efb_wechat_slave/__init__.py:851
+msgid "Switch complete, you can send and receive messages now."
+msgstr "切り替えが完了しました。メッセージを送受信できるようになりました。"
+
+#: efb_wechat_slave/slave_message.py:336
+msgid "[Chat record preview. Open WeChat to view the full record.]"
+msgstr "[チャット履歴のプレビューです。全文は WeChat で確認してください。]"
+
+#: efb_wechat_slave/slave_message.py:374
+msgid "WeChat Channels"
+msgstr ""
+
+#: efb_wechat_slave/slave_message.py:647
+msgid "[Hongbao image, please check your phone.]"
+msgstr "[紅包の画像です。お使いのスマートフォンをご確認ください。]"
+
+#: efb_wechat_slave/wizard.py:154
+msgid "Replace the emoticon in WeChat to emoji. If disabled, the emoticon will be shown as text in square brackets. Enabled by default."
+msgstr "WeChat の表情を emoji に置き換える。無効にすると、表情は角括弧で囲まれたテキストとして表示される。デフォルトでは有効。"

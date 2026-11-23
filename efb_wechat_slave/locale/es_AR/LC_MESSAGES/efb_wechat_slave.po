@@ -564,3 +564,41 @@ msgstr ""
 msgid "Congratulations! You have finished the setup wizard for EFB WeChat Slave channel."
 msgstr ""
 
+
+#: efb_wechat_slave/__init__.py:255
+msgid "Scanned successfully, loading contacts…"
+msgstr "Escaneo exitoso, cargando contactos…"
+
+#: efb_wechat_slave/__init__.py:314
+msgid "WeChat is re-logging in, please retry later."
+msgstr "WeChat está volviendo a iniciar sesión, reintenta más tarde."
+
+#: efb_wechat_slave/__init__.py:618 efb_wechat_slave/__init__.py:635
+#, python-brace-format
+msgid "File size exceeds 25MB limit. File size: {size:.2f}MB"
+msgstr "El tamaño del archivo supera el límite de 25MB. Tamaño del archivo: {size:.2f}MB"
+
+#: efb_wechat_slave/__init__.py:842
+#, python-brace-format
+msgid "Failed to log in again: {error}"
+msgstr "No se pudo volver a iniciar sesión: {error}"
+
+#: efb_wechat_slave/__init__.py:851
+msgid "Switch complete, you can send and receive messages now."
+msgstr "Cambio completado, ya puedes enviar y recibir mensajes."
+
+#: efb_wechat_slave/slave_message.py:336
+msgid "[Chat record preview. Open WeChat to view the full record.]"
+msgstr "[Vista previa del historial de chat. Abre WeChat para ver el historial completo.]"
+
+#: efb_wechat_slave/slave_message.py:374
+msgid "WeChat Channels"
+msgstr ""
+
+#: efb_wechat_slave/slave_message.py:647
+msgid "[Hongbao image, please check your phone.]"
+msgstr "[Imagen de hongbao, revisa tu teléfono.]"
+
+#: efb_wechat_slave/wizard.py:154
+msgid "Replace the emoticon in WeChat to emoji. If disabled, the emoticon will be shown as text in square brackets. Enabled by default."
+msgstr "Reemplaza los emoticonos de WeChat por emoji. Si se desactiva, los emoticonos se muestran como texto entre corchetes. Activado por defecto."
