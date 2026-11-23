@@ -47,35 +47,9 @@ PuidMap 中包含 4 个 dict，分别为
 ## 重新登录后的资料变动
 
 每次登录后 user_name 都会改变，没有备注名的联系人只能依靠 caption 找回原有的 puid。
-为了避免签名或地区的变动导致联系人被分配新的 puid，对于联系人列表中的聊天对象 (好友、公众号、群聊)，
-在以上匹配均失败时，会尝试宽松匹配:
-
-* 候选为昵称相同、性别不冲突，且在本次登录中尚未被任何聊天对象使用的旧 puid
-* 性别、省份、城市、签名中，双方均有值但不相同的项目不得超过 2 项
-* 按签名和地区的相似程度排序，仅当存在唯一的最佳候选时才沿用旧 puid，否则仍创建新的 puid
-* 群成员不参与宽松匹配
-
-登录后会先对整个联系人列表进行一次对账 (`PuidMap.reconcile`)，按依据从强到弱分步进行，
-每一步处理完所有剩余的聊天对象后才进入下一步:
-
-1. user_name、wxid、备注名
-2. 与已保存的 caption 完全相同
-3. 与已保存的 caption 不冲突 (允许缺少部分项目)
-4. 宽松匹配
-
-在前两步中被取用的 puid，不会在后续步骤中凭较弱的依据再分配给其他聊天对象；
-后续步骤也不会凭较弱的依据把聊天对象匹配到会因此夺走其 caption 的 puid 上。
-除此之外，匹配到同一条 caption 的多个聊天对象 (例如同名的群聊) 仍会像以往一样共用同一个 puid。
-
-聊天对象在对账中得到的 puid 在本次登录中保持不变: 之后查询该聊天对象时直接返回这个 puid，
-即使它与其他聊天对象共用该 puid；仅当它的属性与上一次保存时不同，才会重新记录。
-
-对账顺利完成后，本次登录中稍后才出现的好友、公众号、群聊也可以使用宽松匹配，
-但不会得到本次登录中已被其他聊天对象使用的 puid，除非是通过它自己的 user_name 或 wxid 找到的:
-凭备注名或 caption 匹配到这样的 puid 时会跳过，没有其他匹配时创建新的 puid，
-并且记录时不会夺走这些 puid 已保存的备注名和 caption。群成员等其他聊天对象的查询方式不变。
-
-若对账没有进行或中途失败，本次登录中的所有查询都只使用精确匹配，方式与以往相同。
+登录后会先对整个联系人列表 (好友、公众号、群聊) 进行一次对账 (`PuidMap.reconcile`)，
+签名或地区有少量变动的联系人也能沿用原有的 puid，并在本次登录中保持不变。
+其他查询 (包括群成员和稍后才出现的聊天对象) 只使用精确匹配，方式与以往相同。
 
 
 """
@@ -86,19 +60,7 @@ Caption = Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]
 file_io_logger: logging.Logger = logging.getLogger(__name__)
 
 # Attributes of a chat read once, so that matching does not touch the chat again.
-_ChatInfo = collections.namedtuple('_ChatInfo', ('label', 'user_name', 'attrs', 'caption', 'relaxable'))
-
-
-class _UsedByOthers:
-    """The PUIDs used in a login session by chats other than the given one."""
-
-    def __init__(self, users, user_name):
-        self._users = users
-        self._user_name = user_name
-
-    def __contains__(self, puid):
-        users = self._users.get(puid)
-        return bool(users) and self._user_name not in users
+_ChatInfo = collections.namedtuple('_ChatInfo', ('label', 'user_name', 'attrs', 'caption'))
 
 
 class PuidMap(object):
@@ -177,15 +139,12 @@ class PuidMap(object):
         # a chat may look up its own PUID again, e.g. for the name of a group.
         self._reading = threading.local()
 
-        # PUIDs handed out by this instance, i.e. during the current login session,
-        # each with the user_names of the chats it was given to. Kept in memory only.
-        self._claimed = {}
+        # PUIDs handed out by this instance, i.e. during the current login session.
+        # Kept in memory only.
+        self._claimed = set()
         # nick_name -> PUIDs that have (or had) a caption with that nick_name.
         # Built on first use; entries are verified against ``captions`` when read.
         self._nick_index = None
-        # Whether the contact list has been matched as a whole in this session.
-        # Until then, PUIDs in use cannot be told from abandoned ones.
-        self._reconciled = False
         # user_name -> the PUID a chat was given when the contact list was matched
         # in this session, with the attributes it was last saved with. Kept in
         # memory only.
@@ -261,29 +220,9 @@ class PuidMap(object):
                 self.log("Chat %s keeps PUID %s from the matching of the contact list.", info.label, assigned[0])
                 return assigned[0]
 
-            # Once the contact list has been matched, the PUIDs in use are known.
-            # A contact found after that is not given one that another chat uses,
-            # other than by its own user_name or wxid, and takes nothing away
-            # from such a PUID when it is recorded.
-            in_use = ()
-            if self._reconciled and info.relaxable and not assigned:
-                in_use = _UsedByOthers(self._claimed, info.user_name)
-
-            puid = assigned[0] if assigned else (self._match_stable(info, in_use) or self._match_caption(info, in_use))
-            if not puid and info.relaxable:
-                if self._reconciled:
-                    candidates = self._relaxed_candidates(info, in_use)
-                    puid = self._unique_best(candidates)
-                    if puid:
-                        self._log_relaxed_match(info, puid)
-                    elif candidates:
-                        self.log("No single best PUID to reuse for %s among %s.", info.label, sorted(candidates))
-                else:
-                    self.log("%s can only be matched exactly, as the contact list has not been matched "
-                             "in this session.", info.label)
-
+            puid = assigned[0] if assigned else (self._match_stable(info) or self._match_caption(info))
             saved = self._saved_for(puid) if assigned else None
-            puid, value_updated = self._store(info, puid, in_use)
+            puid, value_updated = self._store(info, puid)
             # The attributes are remembered whenever recording them changed what
             # is saved, so that a change that is undone later is recorded as well.
             # A contact reads differently when it shows up in a group; as long as
@@ -302,117 +241,49 @@ class PuidMap(object):
         Assign PUIDs to a whole contact list at once, usually right after login.
 
         Chats are identified in steps, from the strongest evidence to the
-        weakest: stable attributes, a stored caption that is the same as the
-        current one, a stored caption with no conflicting value, and finally a
-        stored caption with the same nick name of which a few values changed.
-        Each step is applied to all remaining chats before the next one
-        starts.
-
-        A PUID taken in the first two steps is not given to another chat on
-        the weaker evidence of the later ones, nor is a chat matched on such
-        evidence to a PUID that would take over its caption. Apart from that,
-        chats that match the same stored caption share its PUID, as they do
-        when looked up one by one.
-
-        In the last of these steps only PUIDs nobody has taken in this session
-        are considered, and one is reused only when the chat and the PUID are
-        each other's single best match.
+        weakest, each applied to all remaining chats before the next one
+        starts: stable attributes, a stored caption with the very same values,
+        a stored caption with no conflicting value, and finally a few changed
+        values (see `_match_relaxed`). Whatever is left gets a new PUID.
 
         A chat keeps the PUID it is given here for the rest of the session: a
         later lookup returns it, and records the chat again only if its
         attributes differ from those it was last saved with.
 
-        Chats that show up later in the session may be recognised by their
-        nick name only once this has completed. From then on, a contact list
-        entry that shows up later is not given a PUID that another chat uses
-        in this session, unless its own user_name or wxid leads to it.
-
         :param chats: contact list entries (friends, official accounts, groups)
         """
 
         # Chats are read before taking the lock: reading one may need a PUID itself.
-        infos = []
-        seen = set()
+        infos = {}
         for chat in chats:
-            try:
-                info = self._snapshot(chat)
-            except Exception:
-                file_io_logger.debug("Skipping a chat that cannot be read.", exc_info=True)
-                continue
-            if (info.user_name in PuidMap.SYSTEM_ACCOUNTS or not self._is_identifiable(info)
-                    or info.user_name in seen):
-                continue
-            seen.add(info.user_name)
-            infos.append(info)
+            info = self._snapshot(chat)
+            if info.user_name not in PuidMap.SYSTEM_ACCOUNTS and self._is_identifiable(info):
+                infos.setdefault(info.user_name, info)
 
         with self._thread_lock:
             self.log("Reconciling %s chats.", len(infos))
             value_updated = False
-            assigned = {}
 
             def store(info, puid):
                 puid, updated = self._store(info, puid)
-                assigned[info.user_name] = (puid, info.attrs, info.caption)
+                self._assigned[info.user_name] = (puid, info.attrs, info.caption)
                 return updated
 
-            # 1. Chats identified by a stable attribute, then those with the very
-            #    same caption as a stored one, take their PUIDs.
-            taken = set()
-            pending = infos
-            for match in (self._match_stable, self._match_same_caption):
+            pending = list(infos.values())
+            for match in (self._match_stable, self._match_same_caption, self._match_compatible_caption,
+                          self._match_relaxed):
                 unmatched = []
                 for info in pending:
                     puid = match(info)
                     if puid:
                         value_updated |= store(info, puid)
-                        taken.add(puid)
                     else:
                         unmatched.append(info)
                 pending = unmatched
 
-            # 2. Chats that merely do not conflict with a stored caption. On this
-            #    and on weaker evidence, a chat is given neither a PUID taken
-            #    above, nor one that would take over the caption of such a PUID.
-            unmatched = []
+            # A chat left over may have an exact match by now, e.g. a group of the same name.
             for info in pending:
-                puid = self._match_caption_indexed(info, taken)
-                if puid:
-                    value_updated |= store(info, puid)
-                else:
-                    unmatched.append(info)
-            pending = unmatched
-
-            # 3. Pair the remaining chats with the PUIDs that are still free.
-            #    All pairs are decided on the same state before any is applied.
-            chat_scores = {}
-            puid_scores = {}
-            for i, info in enumerate(pending):
-                if info.relaxable:
-                    chat_scores[i] = self._relaxed_candidates(info, taken)
-                    for puid, score in chat_scores[i].items():
-                        puid_scores.setdefault(puid, {})[i] = score
-
-            relaxed = {}
-            for i, scores in chat_scores.items():
-                puid = self._unique_best(scores)
-                if puid and self._unique_best(puid_scores[puid]) == i:
-                    relaxed[i] = puid
-                elif scores:
-                    self.log("No single best PUID to reuse for %s among %s.", pending[i].label, sorted(scores))
-
-            for i, puid in relaxed.items():
-                self._log_relaxed_match(pending[i], puid)
-                value_updated |= store(pending[i], puid)
-
-            # 4. Whatever is left gets a new PUID, unless it has an exact match by now.
-            for i, info in enumerate(pending):
-                if i not in relaxed:
-                    puid = self._match_stable(info) or self._match_caption_indexed(info, taken)
-                    value_updated |= store(info, puid)
-
-            self._assigned.update(assigned)
-            self._reconciled = True
-            self.log("Contact list is matched. Chats found later may be matched by nick name.")
+                value_updated |= store(info, self._match_stable(info) or self._match_compatible_caption(info))
 
             if value_updated:
                 self.activate_dump()
@@ -437,7 +308,7 @@ class PuidMap(object):
             label = str(chat) if self.logger else None
 
             if user_name in PuidMap.SYSTEM_ACCOUNTS:
-                return _ChatInfo(label, user_name, None, None, False)
+                return _ChatInfo(label, user_name, None, None)
 
             # 5 common attributes for matching:
             # 1. Chat base name
@@ -457,109 +328,63 @@ class PuidMap(object):
                 getattr(chat, 'remark_name', None),
             )
 
-            return _ChatInfo(label, user_name, attrs, caption, self._is_contact(chat))
+            return _ChatInfo(label, user_name, attrs, caption)
         finally:
             reading.discard(user_name)
-
-    @staticmethod
-    def _is_contact(chat: 'Chat') -> bool:
-        """Whether the chat is a contact list entry, as opposed to e.g. a group member."""
-        from ..api.chats import MP, Friend, Group
-        return isinstance(chat, (Friend, Group, MP))
 
     @staticmethod
     def _is_identifiable(info: _ChatInfo) -> bool:
         return bool(info.user_name and info.caption and info.caption[0])
 
-    def _match_stable(self, info: _ChatInfo, exclude=()):
+    def _match_stable(self, info: _ChatInfo):
         """
-        Look up the PUID of a chat by its stable attributes. A remark name
-        does not lead to a PUID in `exclude`. The thread lock must be held.
+        Look up the PUID of a chat by its stable attributes. The thread lock
+        must be held.
 
         :return: the PUID, or `None` if there is no match
         """
         self.log("Trying to match stable attributes: %s", info.attrs)
         for i in range(3):
             puid = self.attr_dicts[i].get(info.attrs[i])
-            if puid and i == 2 and puid in exclude:
-                self.log("Chat %s is not matched to PUID %s with attribute %s, as another chat uses it.",
-                         info.label, puid, i)
-            elif puid:
+            if puid:
                 self.log("Chat %s is matched to PUID %s with attribute %s", info.label, puid, i)
                 return puid
 
-    def _match_caption(self, info: _ChatInfo, exclude=()):
+    def _match_caption(self, info: _ChatInfo):
         """
         Look up the PUID of a chat by the first stored caption with no
-        conflicting value. The PUIDs in `exclude` are passed over, and so is a
-        caption that would take over the caption of one of them once the chat
-        is recorded. The thread lock must be held.
+        conflicting value. The thread lock must be held.
 
         :return: the PUID, or `None` if there is no match
         """
         self.log("Stable attribute failed, trying to match common attributes: %s", info.caption)
         for caption in self.captions:
             if self.match_captions(caption, info.caption):
-                if self.captions[caption] in exclude or self._takes_caption(caption, info.caption, exclude):
-                    self.log("Chat %s is not matched to PUID %s attributes %s, as that would take a PUID "
-                             "or its attributes from another chat.", info.label, self.captions[caption], caption)
-                    continue
-                return self._matched_by_caption(info, caption)
+                self.log("Chat %s is matched to PUID %s attributes %s", info.label, self.captions[caption], caption)
+                return self.captions[caption]
 
-    def _match_caption_indexed(self, info: _ChatInfo, exclude=()):
-        """
-        Same as `_match_caption`, but only looks at captions with the same
-        nick_name, and leaves the PUIDs in `exclude` and their captions alone.
-        """
-        self.log("Stable attribute failed, trying to match common attributes: %s", info.caption)
-        return self._matched_by_caption(info, self._find_caption_indexed(info.caption, self.match_captions, exclude))
+    def _match_compatible_caption(self, info: _ChatInfo):
+        """Same as `_match_caption`, but only looks at captions with the same nick_name."""
+        return self._match_indexed(info, self.match_captions)
 
     def _match_same_caption(self, info: _ChatInfo):
-        """
-        Look up the PUID of a chat by a stored caption with the very same
-        values. The thread lock must be held.
+        """Look up the PUID of a chat by a stored caption with the very same values."""
+        return self._match_indexed(info, self.same_captions)
 
-        :return: the PUID, or `None` if there is no match
+    def _match_indexed(self, info: _ChatInfo, match):
         """
-        return self._matched_by_caption(info, self._find_caption_indexed(info.caption, self.same_captions))
-
-    def _matched_by_caption(self, info: _ChatInfo, caption):
-        if caption:
-            puid = self.captions[caption]
-            self.log("Chat %s is matched to PUID %s attributes %s", info.label, puid, caption)
-            return puid
-
-    def _find_caption_indexed(self, chat_caption: Caption, match, exclude=()):
-        """
-        Find the stored caption with the same nick_name as the caption of a
+        Look up the PUID of the stored caption with the same nick_name as the
         chat for which `match(stored, chat_caption)` holds. If there are
-        several, the one stored first is returned.
-
-        The captions of the PUIDs in `exclude` are left out, and so is a
-        caption that would take over the caption of one of them once the chat
-        is recorded.
+        several, the one stored first wins. The thread lock must be held.
         """
-        matched = set()
-        for puid in self._nick_puids(chat_caption[0]):
-            if puid in exclude:
-                continue
-            caption = self.captions.get_key(puid)
-            if caption and match(caption, chat_caption) and not self._takes_caption(caption, chat_caption, exclude):
-                matched.add(caption)
-
+        matched = {caption for caption in map(self.captions.get_key, self._nick_puids(info.caption[0]))
+                   if caption and match(caption, info.caption)}
         if len(matched) > 1:
-            for caption in self.captions:
-                if caption in matched:
-                    return caption
-        elif matched:
-            return matched.pop()
-
-    def _takes_caption(self, caption: Caption, chat_caption: Caption, puids) -> bool:
-        """
-        Whether recording a chat under the PUID of a stored caption would take
-        the resulting caption away from one of the given PUIDs.
-        """
-        return self.captions.get(self.merge_captions(caption, chat_caption)) in puids
+            matched = {next(caption for caption in self.captions if caption in matched)}
+        if matched:
+            caption = matched.pop()
+            self.log("Chat %s is matched to PUID %s attributes %s", info.label, self.captions[caption], caption)
+            return self.captions[caption]
 
     def _nick_puids(self, nick_name):
         """
@@ -572,115 +397,57 @@ class PuidMap(object):
                 self._nick_index.setdefault(caption[0], set()).add(puid)
         return self._nick_index.get(nick_name, ())
 
-    def _relaxed_candidates(self, info: _ChatInfo, keep=()):
+    def _match_relaxed(self, info: _ChatInfo):
         """
-        PUIDs a chat may reuse although some of its common attributes changed:
-        same nick_name, no conflicting gender, no more changed attributes than
-        `MAX_CHANGED_ATTRIBUTES`, and not used by any chat in this session.
-        One that would take over the caption of a PUID in `keep` once the chat
-        is recorded is left out. The thread lock must be held.
-
-        :return: dict of PUID -> similarity to the chat
+        Look up a PUID for a chat although some of its common attributes
+        changed: one not used by any chat in this session, whose caption has
+        the same nick_name, no conflicting gender and no more changed values
+        than `MAX_CHANGED_ATTRIBUTES`. Of these, the one with the most equal
+        values plus the most alike signature (0 to 1) is taken, unless several
+        are equally alike. The thread lock must be held.
         """
         nick_name = info.caption[0]
-        candidates = {}
         if nick_name in self.PLACEHOLDER_NICK_NAMES:
-            return candidates
+            return
+        scores = {}
         for puid in self._nick_puids(nick_name):
-            if puid in self._claimed:
+            old = self.captions.get_key(puid)
+            if puid in self._claimed or not old or old[0] != nick_name:
                 continue
-            caption = self.captions.get_key(puid)
-            if not caption or caption[0] != nick_name:
+            changed = [i for i in range(1, 5) if old[i] and info.caption[i] and old[i] != info.caption[i]]
+            if 1 in changed or len(changed) > self.MAX_CHANGED_ATTRIBUTES:
                 continue
-            if caption[1] and info.caption[1] and caption[1] != info.caption[1]:
-                continue
-            changed = sum(1 for i in range(1, 5)
-                          if caption[i] and info.caption[i] and caption[i] != info.caption[i])
-            if changed > self.MAX_CHANGED_ATTRIBUTES:
-                continue
-            if self._takes_caption(caption, info.caption, keep):
-                continue
-            candidates[puid] = self._similarity(caption, info.caption)
-        return candidates
+            scores[puid] = sum(1 for i in range(1, 5) if old[i] and old[i] == info.caption[i])
+            if old[4] and info.caption[4]:
+                scores[puid] += difflib.SequenceMatcher(None, old[4], info.caption[4]).ratio()
 
-    @staticmethod
-    def _similarity(old: Caption, new: Caption) -> float:
-        """
-        Similarity of two captions with the same nick_name: number of other
-        attributes that are equal, plus how alike the signatures are (0 to 1).
-        """
-        score = 0.0
-        for i in range(1, 5):
-            if old[i] and new[i] and old[i] == new[i]:
-                score += 1
-        if old[4] and new[4]:
-            score += difflib.SequenceMatcher(None, old[4], new[4]).ratio()
-        return score
-
-    @staticmethod
-    def _unique_best(scores):
-        """The key with the highest score, or `None` if there is none or it is shared."""
-        best = None
-        best_score = None
-        tied = False
-        for key, score in scores.items():
-            if best_score is None or score > best_score:
-                best, best_score, tied = key, score, False
-            elif score == best_score:
-                tied = True
-        return None if tied else best
-
-    def _log_relaxed_match(self, info: _ChatInfo, puid):
+        ranked = sorted(scores.values(), reverse=True)
+        if ranked[1:2] == ranked[:1]:
+            if scores:
+                self.log("No single best PUID to reuse for %s among %s.", info.label, sorted(scores))
+            return
+        puid = max(scores, key=scores.get)
         self.log("Chat %s is matched to PUID %s by nick name, as its common attributes changed from %s to %s",
                  info.label, puid, self.captions.get_key(puid), info.caption)
-
-    def _leads_contact_away(self, caption: Caption, puids) -> bool:
-        """
-        Whether a caption, once stored for another PUID, would lead a contact
-        away from one of the given PUIDs after the next login: the contact was
-        given that PUID when the contact list was matched and shows the very
-        same caption, while the caption stored for its PUID is not the very
-        same and its remark name, if any, is not stored for it.
-        """
-        if not puids:
-            return False
-        for puid in self._nick_puids(caption[0]):
-            stored = self.captions.get_key(puid)
-            if puid in puids and stored and not self.same_captions(stored, caption):
-                for user_name in self._claimed[puid]:
-                    assigned = self._assigned.get(user_name)
-                    if (assigned and self.same_captions(assigned[2], caption)
-                            and self.remark_names.get(assigned[1][2]) != puid):
-                        return True
-        return False
+        return puid
 
     def _saved_for(self, puid):
         """What is saved for a PUID, apart from the user_name of the chat recorded last."""
         return [attr_dict.get_key(puid) for attr_dict in (self.wxids, self.remark_names, self.captions)]
 
-    def _store(self, info: _ChatInfo, puid, keep=()):
+    def _store(self, info: _ChatInfo, puid):
         """
         Record a chat under a PUID, or under a new PUID if `None` is given,
-        and mark the PUID as used by the chat in this session. A remark name
-        or caption stored for a PUID in `keep` is left with that PUID, and a
-        caption that would lead a contact away from such a PUID is not
-        stored; without the caption, only the user_name of the chat is
-        stored. The thread lock must be held.
+        and mark the PUID as used in this session. The thread lock must be
+        held.
 
         :return: the PUID, and whether anything worth saving has changed
         """
         old_caption = self.captions.get_key(puid) if puid else None
         new_caption = self.merge_captions(old_caption, info.caption)
 
-        # The caption of a PUID in `keep` stays with it, and no caption is
-        # stored that fits a contact using such a PUID better than the one
-        # stored for that PUID. Then only the user_name is stored: found by
-        # another attribute on the next login, this PUID would take the
-        # caption, or the contact, after all.
-        caption_kept = self.captions.get(new_caption) in keep or self._leads_contact_away(new_caption, keep)
-
         if puid:
-            value_updated = old_caption != new_caption and not caption_kept
+            value_updated = old_caption != new_caption
             if old_caption is None and new_caption in self.captions:
                 # Chats with identical common attributes take turns holding
                 # the single entry for them: nothing new to save.
@@ -695,7 +462,7 @@ class PuidMap(object):
 
         for i in range(3):
             chat_attr = info.attrs[i]
-            if chat_attr and self.attr_dicts[i].get(chat_attr) not in keep and not (i and caption_kept):
+            if chat_attr:
                 old_attr = self.attr_dicts[i].get_key(puid)
                 if old_attr != chat_attr:
                     value_updated = True
@@ -703,12 +470,11 @@ class PuidMap(object):
                              i, puid, old_attr, chat_attr)
                 self.attr_dicts[i][chat_attr] = puid
 
-        if not caption_kept:
-            self.captions[new_caption] = puid
-            if self._nick_index is not None:
-                self._nick_index.setdefault(new_caption[0], set()).add(puid)
+        self.captions[new_caption] = puid
+        if self._nick_index is not None:
+            self._nick_index.setdefault(new_caption[0], set()).add(puid)
 
-        self._claimed.setdefault(puid, set()).add(info.user_name)
+        self._claimed.add(puid)
 
         return puid, value_updated
 
